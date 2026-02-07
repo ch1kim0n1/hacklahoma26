@@ -1,0 +1,1 @@
+{"id":"notes-mcp","name":"Apple Notes MCP","description":"List and create Apple Notes via native macOS Notes app","platforms":["darwin"],"config_schema":{"type":"object","properties":{}}}
