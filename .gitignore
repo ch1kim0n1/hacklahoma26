@@ -1,3 +1,7 @@
+# Google OAuth — do not commit (each user authorizes their own account)
+credentials.json
+token.json
+token_gmail.json
 # OS
 .DS_Store
 Thumbs.db
@@ -9,6 +13,13 @@ logs/
 # Python
 __pycache__/
 *.py[cod]
+*.so
+.pytest_cache/
+*.egg-info/
+
+# Logs
+*.log
+logs/
 *.pyo
 *.pyd
 .pytest_cache/

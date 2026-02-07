@@ -1,0 +1,1 @@
+{"id":"reminders-mcp","name":"Apple Reminders MCP","description":"List and create Apple Reminders via native macOS Reminders app","platforms":["darwin"],"config_schema":{"type":"object","properties":{}}}

@@ -1,0 +1,13 @@
+{
+    "id": "calendar-mcp",
+    "name": "Google Calendar MCP",
+    "description": "Read and create Google Calendar events",
+    "config_schema": {
+      "type": "object",
+      "properties": {
+        "credentials_path": { "type": "string" },
+        "token_path": { "type": "string" }
+      },
+      "required": ["credentials_path"]
+    }
+}  
