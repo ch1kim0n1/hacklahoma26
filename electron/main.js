@@ -1,0 +1,394 @@
+const { app, BrowserWindow, ipcMain, screen } = require("electron");
+const { spawn } = require("child_process");
+const path = require("path");
+
+const REPO_ROOT = path.resolve(__dirname, "..");
+const BRIDGE_PATH = path.join(REPO_ROOT, "pylink", "desktop_bridge.py");
+
+let mainWindow = null;
+let launcherWindow = null;
+let bridgeProcess = null;
+let bridgeBuffer = "";
+let bridgeReady = false;
+let bridgePending = [];
+let isQuitting = false;
+
+const runtimeState = {
+  backend: "offline",
+  dryRun: false,
+  speed: 1.0,
+  pendingConfirmation: false,
+  pendingClarification: false,
+  clarificationPrompt: "",
+  lastResult: null,
+  permissionProfile: {
+    open_app: true,
+    focus_app: true,
+    close_app: true,
+    open_url: true,
+    open_file: true,
+    type_text: true,
+    click: true,
+    right_click: true,
+    double_click: true,
+    scroll: true,
+    press_key: true,
+    hotkey: true,
+    send_email: true,
+    send_message: true,
+    wait: true
+  }
+};
+
+function broadcast(channel, payload) {
+  BrowserWindow.getAllWindows().forEach((windowRef) => {
+    if (!windowRef.isDestroyed()) {
+      windowRef.webContents.send(channel, payload);
+    }
+  });
+}
+
+function applyRuntimeResult(result) {
+  runtimeState.lastResult = result;
+  if (typeof result.pending_confirmation === "boolean") {
+    runtimeState.pendingConfirmation = result.pending_confirmation;
+  }
+  if (typeof result.pending_clarification === "boolean") {
+    runtimeState.pendingClarification = result.pending_clarification;
+  }
+  runtimeState.clarificationPrompt = result.clarification_prompt || "";
+  broadcast("runtime:update", runtimeState);
+}
+
+function onBridgeLine(rawLine) {
+  const line = rawLine.trim();
+  if (!line) {
+    return;
+  }
+
+  let payload = null;
+  try {
+    payload = JSON.parse(line);
+  } catch (_) {
+    broadcast("runtime:bridge-log", { line });
+    return;
+  }
+
+  if (payload.status === "ready" && !bridgeReady) {
+    bridgeReady = true;
+    runtimeState.backend = "online";
+    runtimeState.dryRun = Boolean(payload.dry_run);
+    runtimeState.speed = Number(payload.speed || 1.0);
+    broadcast("runtime:update", runtimeState);
+  }
+
+  if (bridgePending.length > 0) {
+    const pending = bridgePending.shift();
+    clearTimeout(pending.timeout);
+    pending.resolve(payload);
+    return;
+  }
+
+  applyRuntimeResult(payload);
+}
+
+function failPendingRequests(error) {
+  bridgePending.forEach((pending) => {
+    clearTimeout(pending.timeout);
+    pending.reject(error);
+  });
+  bridgePending = [];
+}
+
+function getPythonCommandCandidates() {
+  return process.platform === "win32" ? ["python", "py"] : ["python3", "python"];
+}
+
+function spawnBridge(command) {
+  return new Promise((resolve, reject) => {
+    bridgeBuffer = "";
+    const child = spawn(command, [BRIDGE_PATH], {
+      cwd: REPO_ROOT,
+      env: {
+        ...process.env,
+        PYTHONUNBUFFERED: "1",
+        PIXELINK_ENABLE_KILL_SWITCH: "0"
+      },
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+
+    let resolved = false;
+    const timeout = setTimeout(() => {
+      if (!resolved) {
+        child.kill();
+        reject(new Error(`Bridge startup timed out for '${command}'`));
+      }
+    }, 8000);
+
+    child.stdout.on("data", (chunk) => {
+      bridgeBuffer += chunk.toString("utf8");
+      const lines = bridgeBuffer.split("\n");
+      bridgeBuffer = lines.pop() || "";
+
+      for (const line of lines) {
+        if (!resolved) {
+          try {
+            const payload = JSON.parse(line.trim());
+            if (payload.status === "ready") {
+              resolved = true;
+              clearTimeout(timeout);
+              bridgeProcess = child;
+              bridgeReady = true;
+              runtimeState.backend = "online";
+              runtimeState.dryRun = Boolean(payload.dry_run);
+              runtimeState.speed = Number(payload.speed || 1.0);
+              setupBridgeProcessListeners(child);
+              resolve();
+              continue;
+            }
+          } catch (_) {
+            // Ignore non-JSON lines before bridge ready.
+          }
+        }
+        onBridgeLine(line);
+      }
+    });
+
+    child.stderr.on("data", (chunk) => {
+      broadcast("runtime:bridge-error", { error: chunk.toString("utf8") });
+    });
+
+    child.on("error", (error) => {
+      clearTimeout(timeout);
+      if (!resolved) {
+        reject(error);
+      }
+    });
+
+    child.on("exit", (code) => {
+      clearTimeout(timeout);
+      if (!resolved) {
+        reject(new Error(`Bridge exited early with code ${code}`));
+      }
+    });
+  });
+}
+
+async function startBridge() {
+  const commands = getPythonCommandCandidates();
+  let lastError = null;
+  for (const command of commands) {
+    try {
+      await spawnBridge(command);
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error("Unable to start Python bridge");
+}
+
+function setupBridgeProcessListeners(child) {
+  child.on("exit", (code) => {
+    bridgeReady = false;
+    runtimeState.backend = "offline";
+    broadcast("runtime:update", runtimeState);
+    failPendingRequests(new Error(`Bridge exited with code ${code}`));
+  });
+
+  child.on("error", (error) => {
+    bridgeReady = false;
+    runtimeState.backend = "offline";
+    broadcast("runtime:update", runtimeState);
+    failPendingRequests(error);
+  });
+}
+
+function sendBridgeRequest(payload) {
+  if (!bridgeProcess || !bridgeReady) {
+    return Promise.reject(new Error("Python bridge is not ready"));
+  }
+
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      bridgePending = bridgePending.filter((item) => item.resolve !== resolve);
+      reject(new Error(`Bridge request timeout for action '${payload.action}'`));
+    }, 12000);
+
+    bridgePending.push({ resolve, reject, timeout });
+
+    try {
+      bridgeProcess.stdin.write(`${JSON.stringify(payload)}\n`);
+    } catch (error) {
+      clearTimeout(timeout);
+      bridgePending = bridgePending.filter((item) => item.resolve !== resolve);
+      reject(error);
+    }
+  });
+}
+
+async function processRuntimeInput(text, source = "text") {
+  const result = await sendBridgeRequest({ action: "process_input", text, source });
+  applyRuntimeResult(result);
+  return result;
+}
+
+function createMainWindow() {
+  mainWindow = new BrowserWindow({
+    width: 500,
+    height: 360,
+    minWidth: 420,
+    minHeight: 280,
+    show: false,
+    title: "PixelLink",
+    backgroundColor: "#f2f4f8",
+    titleBarStyle: "hiddenInset",
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false
+    }
+  });
+
+  mainWindow.loadFile(path.join(__dirname, "renderer", "index.html"));
+  mainWindow.on("close", (event) => {
+    if (!isQuitting) {
+      event.preventDefault();
+      mainWindow.hide();
+    }
+  });
+}
+
+function createLauncherWindow() {
+  const launcherSize = 62;
+  const { workArea } = screen.getPrimaryDisplay();
+  const x = Math.round(workArea.x + workArea.width - launcherSize - 18);
+  const y = Math.round(workArea.y + workArea.height - launcherSize - 18);
+
+  launcherWindow = new BrowserWindow({
+    width: launcherSize,
+    height: launcherSize,
+    x,
+    y,
+    show: true,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    movable: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    hasShadow: false,
+    title: "PixelLink Launcher",
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false
+    }
+  });
+
+  launcherWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  launcherWindow.loadFile(path.join(__dirname, "renderer", "launcher.html"));
+}
+
+function openMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function registerIpcHandlers() {
+  ipcMain.handle("runtime:get-state", async () => ({ runtime: runtimeState }));
+
+  ipcMain.handle("runtime:send-input", async (_event, payload) => {
+    const text = String(payload?.text || "");
+    const source = String(payload?.source || "text");
+    return processRuntimeInput(text, source);
+  });
+
+  ipcMain.handle("runtime:confirm", async (_event, payload) => {
+    const source = String(payload?.source || "text");
+    return processRuntimeInput("confirm", source);
+  });
+
+  ipcMain.handle("runtime:cancel", async (_event, payload) => {
+    const source = String(payload?.source || "text");
+    return processRuntimeInput("cancel", source);
+  });
+
+  ipcMain.handle("runtime:update-preferences", async (_event, payload) => {
+    const speed = Number(payload?.speed || runtimeState.speed);
+    const permissionProfile = payload?.permissionProfile || runtimeState.permissionProfile;
+    runtimeState.speed = speed;
+    runtimeState.permissionProfile = permissionProfile;
+    const response = await sendBridgeRequest({
+      action: "update_preferences",
+      speed,
+      permission_profile: permissionProfile
+    });
+    broadcast("runtime:update", runtimeState);
+    return response;
+  });
+
+  ipcMain.handle("ui:open-main", async () => {
+    openMainWindow();
+    return { ok: true };
+  });
+
+  ipcMain.handle("ui:hide-main", async () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.hide();
+    }
+    return { ok: true };
+  });
+}
+
+async function shutdownBridge() {
+  if (!bridgeProcess || !bridgeReady) {
+    return;
+  }
+  try {
+    await sendBridgeRequest({ action: "shutdown" });
+  } catch (_) {
+    // Ignore errors during quit.
+  }
+  bridgeReady = false;
+  bridgeProcess.kill();
+}
+
+app.whenReady().then(async () => {
+  registerIpcHandlers();
+  createMainWindow();
+  createLauncherWindow();
+
+  try {
+    await startBridge();
+  } catch (error) {
+    runtimeState.backend = "offline";
+    broadcast("runtime:bridge-error", { error: String(error.message || error) });
+  }
+
+  app.on("activate", () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createMainWindow();
+      createLauncherWindow();
+    } else {
+      openMainWindow();
+    }
+  });
+});
+
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") {
+    app.quit();
+  }
+});
+
+app.on("before-quit", async () => {
+  isQuitting = true;
+  await shutdownBridge();
+});
+

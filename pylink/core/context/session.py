@@ -9,6 +9,7 @@ class SessionContext:
     last_action: str | None = None
     history: List[dict[str, Any]] = field(default_factory=list)
     pending_steps: list[Any] = field(default_factory=list)
+    pending_clarification: dict[str, Any] | None = None
 
     def record_intent(self, intent_name: str, raw_text: str) -> None:
         self.last_intent = intent_name
@@ -26,3 +27,9 @@ class SessionContext:
 
     def clear_pending(self) -> None:
         self.pending_steps = []
+
+    def set_pending_clarification(self, payload: dict[str, Any]) -> None:
+        self.pending_clarification = payload
+
+    def clear_pending_clarification(self) -> None:
+        self.pending_clarification = None

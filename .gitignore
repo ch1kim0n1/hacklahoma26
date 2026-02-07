@@ -1,0 +1,43 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Node / Electron
+node_modules/
+electron/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Electron build/runtime artifacts
+dist/
+out/
+release/
+electron/dist/
+electron/out/
+electron/release/
+electron/.electron/
+electron/.cache/
+electron/.vite/
+
+# IDE
+.idea/
+.vscode/
+
