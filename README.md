@@ -67,7 +67,6 @@ PixelLink:
 ### Primary Users
 
 * People with limited motor control
-* People with speech impairments
 * Neurodivergent users
 * Users with temporary disabilities or injuries
 
@@ -104,7 +103,7 @@ User Input (Text / Voice / Face / Phone)
 * Window and application control
 * File system interaction
 
-### Phone ↔ PC Bridge
+### Phone ↔ PC Bridge (POST MVP)
 
 * Phone as alternative controller
 * Secure local communication
@@ -112,11 +111,11 @@ User Input (Text / Voice / Face / Phone)
 
 ### Multi-Modal Input
 
-* Text
-* Voice (optional)
+* Text (usually via SST since people with no hands cant type)
+* Voice
 * Facial gestures
 * Head movement
-* Mobile input
+* Mobile input (POST MVP)
 
 ### Accessibility-First Design
 
@@ -137,13 +136,6 @@ PixelLink is **local-first** by design.
 * No background surveillance
 * No hidden data collection
 
-### Safeguards
-
-* Permission scopes per action
-* Kill switch
-* Activity audit log
-* Offline operation
-
 ---
 
 ## MVP Scope
@@ -163,18 +155,19 @@ PixelLink is **local-first** by design.
 
 ---
 
-## Suggested Tech Stack
+## Tech Stack
 
 ### Core
 
 * Python (NLU + execution)
 * OS automation libraries
 * Local WebSocket or TCP for device bridge
+* Cloud LLM (openAI)
+* Vision models for face or gesture input
 
 ### Optional
 
 * On-device LLM
-* Vision models for face or gesture input
 * Cross-platform UI framework
 
 ---
@@ -229,30 +222,6 @@ PixelLink is **local-first** by design.
 * Multi-device ecosystem
 * Research partnerships
 * Accessibility standardization
-
----
-
-## Contributing
-
-PixelLink is designed to be **open-source and extensible**.
-
-Contributions are welcome for:
-
-* Accessibility improvements
-* New input modalities
-* OS integrations
-* Documentation and testing
-
-Contribution guidelines forthcoming.
-
----
-
-## License
-
-MIT License (recommended for accessibility tooling)
-
----
-
 ## Mission
 
 PixelLink exists to remove physical barriers between people and technology—by letting intent, not ability, define access.
