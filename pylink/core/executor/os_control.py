@@ -1,7 +1,7 @@
 import platform
 import subprocess
-import re
 from typing import Optional
+from urllib.parse import urlparse
 
 
 class OSController:
@@ -22,6 +22,13 @@ class OSController:
         for char in dangerous_chars:
             if char in app_name:
                 raise ValueError(f"Invalid app name: contains dangerous character '{char}'")
+
+    def _validate_url(self, url: str) -> None:
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"}:
+            raise ValueError(f"Unsupported URL scheme for '{url}'")
+        if not parsed.netloc:
+            raise ValueError(f"Invalid URL '{url}'")
 
     def open_app(self, app_name: str) -> None:
         if not app_name:
@@ -99,6 +106,190 @@ class OSController:
             # For Windows/Linux, opening is the same as focusing
             self.open_app(app_name)
 
+    def close_app(self, app_name: str) -> None:
+        if not app_name:
+            raise ValueError("App name is required")
+        self._validate_app_name(app_name)
+        system = platform.system().lower()
+        try:
+            if system == "darwin":
+                subprocess.run(
+                    ["osascript", "-e", f'tell application "{app_name}" to quit'],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=True,
+                )
+            elif system == "windows":
+                subprocess.run(
+                    ["taskkill", "/IM", f"{app_name}.exe", "/F"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=True,
+                )
+            else:
+                subprocess.run(
+                    ["pkill", "-f", app_name],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=True,
+                )
+        except subprocess.CalledProcessError as e:
+            error_output = e.stderr.strip() if e.stderr else str(e)
+            raise RuntimeError(f"Failed to close app '{app_name}': {error_output}")
+
+    def open_url(self, url: str) -> None:
+        if not url:
+            raise ValueError("URL is required")
+        self._validate_url(url)
+        system = platform.system().lower()
+        try:
+            if system == "darwin":
+                subprocess.run(["open", url], capture_output=True, text=True, timeout=5, check=True)
+            elif system == "windows":
+                subprocess.run(["cmd", "/c", "start", "", url], capture_output=True, text=True, timeout=5, check=True)
+            else:
+                subprocess.run(["xdg-open", url], capture_output=True, text=True, timeout=5, check=True)
+        except subprocess.CalledProcessError as e:
+            error_output = e.stderr.strip() if e.stderr else str(e)
+            raise RuntimeError(f"Failed to open URL '{url}': {error_output}")
+
+    def open_file(self, file_path: str) -> None:
+        if not file_path:
+            raise ValueError("File path is required")
+        system = platform.system().lower()
+        try:
+            if system == "darwin":
+                subprocess.run(["open", file_path], capture_output=True, text=True, timeout=5, check=True)
+            elif system == "windows":
+                subprocess.run(["cmd", "/c", "start", "", file_path], capture_output=True, text=True, timeout=5, check=True)
+            else:
+                subprocess.run(["xdg-open", file_path], capture_output=True, text=True, timeout=5, check=True)
+        except subprocess.CalledProcessError as e:
+            error_output = e.stderr.strip() if e.stderr else str(e)
+            raise RuntimeError(f"Failed to open file '{file_path}': {error_output}")
+
+    def send_text_native(self, app_name: str, target: str, content: str) -> None:
+        system = platform.system().lower()
+        if system != "darwin":
+            raise RuntimeError("Native text sending is currently only supported on macOS")
+        _ = app_name
+
+        safe_target = _escape_applescript_text(target)
+        safe_content = _escape_applescript_text(content)
+
+        script = f'''
+set targetQuery to "{safe_target}"
+set messageText to "{safe_content}"
+set matchedBuddy to missing value
+set resolvedHandle to ""
+
+on normalize_phone(rawValue)
+    set cleaned to do shell script "echo " & quoted form of rawValue & " | tr -cd '0-9+'"
+    return cleaned
+end normalize_phone
+
+on find_contact_handle(nameQuery)
+    tell application "Contacts"
+        set queryTokens to words of nameQuery
+        repeat with p in people
+            set personName to ""
+            try
+                set personName to (name of p as text)
+            end try
+
+            set allTokensMatch to true
+            repeat with tk in queryTokens
+                set tokenText to contents of tk
+                if tokenText is not "" then
+                    ignoring case
+                        if personName does not contain tokenText then
+                            set allTokensMatch to false
+                            exit repeat
+                        end if
+                    end ignoring
+                end if
+            end repeat
+
+            if allTokensMatch then
+                try
+                    set phoneValue to value of first phone of p as text
+                    if phoneValue is not "" then
+                        return my normalize_phone(phoneValue)
+                    end if
+                end try
+                try
+                    set emailValue to value of first email of p as text
+                    if emailValue is not "" then
+                        return emailValue
+                    end if
+                end try
+            end if
+        end repeat
+    end tell
+    return ""
+end find_contact_handle
+
+tell application "Messages"
+    activate
+    repeat with svc in services
+        try
+            repeat with b in buddies of svc
+                set buddyName to ""
+                set buddyHandle to ""
+                try
+                    set buddyName to (name of b as text)
+                end try
+                try
+                    set buddyHandle to (handle of b as text)
+                end try
+                ignoring case
+                    if buddyName contains targetQuery or buddyHandle contains targetQuery then
+                        set matchedBuddy to b
+                        exit repeat
+                    end if
+                end ignoring
+            end repeat
+        end try
+        if matchedBuddy is not missing value then exit repeat
+    end repeat
+
+    if matchedBuddy is missing value then
+        set resolvedHandle to my find_contact_handle(targetQuery)
+        if resolvedHandle is not "" then
+            repeat with svc in services
+                try
+                    set maybeBuddy to buddy resolvedHandle of svc
+                    if maybeBuddy is not missing value then
+                        set matchedBuddy to maybeBuddy
+                        exit repeat
+                    end if
+                end try
+            end repeat
+        end if
+    end if
+
+    if matchedBuddy is missing value then
+        error "No matching Messages contact found for '" & targetQuery & "'. Use a more specific contact name."
+    end if
+
+    send messageText to matchedBuddy
+end tell
+'''
+        try:
+            subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True,
+                text=True,
+                timeout=8,
+                check=True,
+            )
+        except subprocess.CalledProcessError as e:
+            error_output = e.stderr.strip() if e.stderr else str(e)
+            raise RuntimeError(f"Failed to send text in '{app_name}': {error_output}")
+
     def run_shell(self, command: list[str]) -> Optional[subprocess.Popen]:
         """Execute shell command with validation. Use with extreme caution."""
         if not command:
@@ -113,3 +304,7 @@ class OSController:
             return subprocess.Popen(command, capture_output=True, text=True)
         except Exception as e:
             raise RuntimeError(f"Failed to execute shell command: {str(e)}")
+
+
+def _escape_applescript_text(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ").replace("\r", " ")

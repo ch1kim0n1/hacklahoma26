@@ -1,0 +1,14 @@
+{
+  "name": "pixelink-desktop",
+  "version": "0.1.0",
+  "description": "PixelLink accessibility desktop app",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "start:dry-run": "PIXELINK_DRY_RUN=1 electron ."
+  },
+  "devDependencies": {
+    "electron": "^37.3.1"
+  }
+}
+
