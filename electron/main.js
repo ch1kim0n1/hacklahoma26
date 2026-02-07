@@ -4,6 +4,9 @@ const path = require("path");
 
 const REPO_ROOT = path.resolve(__dirname, "..");
 const BRIDGE_PATH = path.join(REPO_ROOT, "pylink", "desktop_bridge.py");
+const VENV_PYTHON = process.platform === "win32"
+  ? path.join(REPO_ROOT, ".venv", "Scripts", "python.exe")
+  : path.join(REPO_ROOT, ".venv", "bin", "python");
 
 let mainWindow = null;
 let launcherWindow = null;
@@ -27,6 +30,7 @@ const runtimeState = {
     close_app: true,
     open_url: true,
     open_file: true,
+    send_text_native: true,
     type_text: true,
     click: true,
     right_click: true,
@@ -36,7 +40,14 @@ const runtimeState = {
     hotkey: true,
     send_email: true,
     send_message: true,
-    wait: true
+    wait: true,
+    mcp_create_reminder: true,
+    mcp_create_note: true,
+    mcp_list_reminders: true,
+    mcp_list_notes: true,
+    mcp_get_events: true,
+    mcp_create_event: true,
+    autofill_login: true
   }
 };
 
@@ -101,7 +112,16 @@ function failPendingRequests(error) {
 }
 
 function getPythonCommandCandidates() {
-  return process.platform === "win32" ? ["python", "py"] : ["python3", "python"];
+  const candidates = [];
+  // Prefer repo-local virtualenv if present (ensures optional MCP deps are available).
+  try {
+    if (require("fs").existsSync(VENV_PYTHON)) {
+      candidates.push(VENV_PYTHON);
+    }
+  } catch (_) {
+    // ignore
+  }
+  return candidates.concat(process.platform === "win32" ? ["python", "py"] : ["python3", "python"]);
 }
 
 function spawnBridge(command) {
@@ -155,7 +175,17 @@ function spawnBridge(command) {
     });
 
     child.stderr.on("data", (chunk) => {
-      broadcast("runtime:bridge-error", { error: chunk.toString("utf8") });
+      const text = chunk.toString("utf8");
+      // The Python bridge may emit non-fatal warnings to stderr (e.g. optional plugins
+      // skipped due to missing deps). Surface those as logs so they don't look like failures.
+      const lines = text.split(/\r?\n/).filter(Boolean);
+      for (const line of lines) {
+        if (line.startsWith("[bridge] Skipping plugin")) {
+          broadcast("runtime:bridge-log", { line });
+        } else {
+          broadcast("runtime:bridge-error", { error: line });
+        }
+      }
     });
 
     child.on("error", (error) => {

@@ -18,6 +18,9 @@ class ActionStep:
 
 
 class ActionPlanner:
+    def __init__(self, mcp_tools=None):
+        self.mcp_tools = mcp_tools or {}
+
     def plan(self, intent: Intent, context, guard: SafetyGuard) -> List[ActionStep]:
         steps: List[ActionStep] = []
         name = intent.name
@@ -163,6 +166,48 @@ class ActionPlanner:
 
         elif name == "wait":
             steps.append(ActionStep("wait", {"seconds": float(intent.entities.get("seconds", 1.0))}, False, "Wait"))
+
+        elif name == "create_reminder":
+            params = {
+                "list_name": intent.entities.get("list_name", "Reminders"),
+                "name": intent.entities.get("name", ""),
+                "body": intent.entities.get("body", ""),
+                "due_date_iso": intent.entities.get("due_date_iso"),
+            }
+            steps.append(
+                ActionStep(
+                    "mcp_create_reminder",
+                    params,
+                    False,
+                    f"Create reminder '{params['name']}' in {params['list_name']}",
+                )
+            )
+
+        elif name == "create_note":
+            params = {
+                "folder_name": intent.entities.get("folder_name", "Notes"),
+                "title": intent.entities.get("title", ""),
+                "body": intent.entities.get("body", ""),
+            }
+            steps.append(
+                ActionStep(
+                    "mcp_create_note",
+                    params,
+                    False,
+                    f"Create note '{params['title']}' in {params['folder_name']}",
+                )
+            )
+
+        elif name == "login":
+            service = intent.entities.get("service", "")
+            steps.append(
+                ActionStep(
+                    "autofill_login",
+                    {"service": service},
+                    False,
+                    f"Login to {service} with saved credentials",
+                )
+            )
 
         return steps
 

@@ -238,6 +238,46 @@ def parse_intent(text: str, context=None) -> Intent:
     if lowered in {"cancel", "stop", "abort", "no", "n", "nevermind", "nope", "never mind"}:
         return Intent(name="cancel", confidence=1.0, raw_text=text)
 
+    # File search - check early before general search patterns
+    if re.search(r"\b(find file|search file|locate file|find document|search for file|search document)\b", cleaned):
+        query = _extract_after_keywords(
+            text, lowered,
+            ["find file ", "search file ", "locate file ", "find document ", "search for file ", "search document "]
+        )
+        if query:
+            return Intent(
+                name="search_file",
+                entities={"query": query},
+                confidence=0.85,
+                raw_text=text,
+            )
+
+    # Login intent - autofill passwords
+    if re.search(r"\b(login|log in|sign in|signin|authenticate)\b", cleaned):
+        # Extract service/website name
+        service = None
+        
+        # Try "login to <service>"
+        service = _extract_after_keywords(
+            text, lowered,
+            ["login to ", "log in to ", "sign in to ", "signin to ", "authenticate to ",
+             "login on ", "log in on ", "sign in on "]
+        )
+        
+        if not service:
+            # Try "<service> login"
+            match = re.search(r"(\w+)\s+(?:login|log in|sign in)", cleaned)
+            if match:
+                service = match.group(1)
+        
+        if service:
+            return Intent(
+                name="login",
+                entities={"service": service.strip()},
+                confidence=0.87,
+                raw_text=text,
+            )
+
     if re.search(r"\b(search youtube for|find on youtube|look up on youtube)\b", cleaned):
         query = _extract_after_keywords(text, lowered, ["search youtube for ", "find on youtube ", "look up on youtube "])
         if query:
@@ -248,11 +288,15 @@ def parse_intent(text: str, context=None) -> Intent:
                 raw_text=text,
             )
 
-    if re.search(r"\b(search web for|search for|look up|find online|google for)\b", cleaned) or cleaned.startswith("google "):
+    # Enhanced web search patterns
+    if re.search(r"\b(search|browse|find|look up|google|search for|browse for|find on internet|search internet|search online|look online)\b", cleaned):
+        # Extract query with more patterns
         query = _extract_after_keywords(
             text,
             lowered,
-            ["search web for ", "search for ", "look up ", "find online ", "google for ", "google "],
+            ["search web for ", "search for ", "look up ", "find online ", "google for ", "google ",
+             "browse for ", "find on internet ", "search internet for ", "search online for ",
+             "look online for ", "browse ", "search ", "find "],
         )
         if query and "youtube" not in query.lower():
             return Intent(name="search_web", entities={"query": query}, confidence=0.86, raw_text=text)
@@ -296,6 +340,32 @@ def parse_intent(text: str, context=None) -> Intent:
     if re.search(r"\b(close app|quit app|exit app|close application|quit)\b", cleaned):
         app = _extract_after_keywords(text, lowered, ["close app ", "quit app ", "exit app ", "close application ", "quit "])
         return Intent(name="close_app", entities={"app": (app or "").strip()}, confidence=0.84, raw_text=text)
+
+    # Note creation - check before type_text to avoid conflicts
+    if re.search(r"\b(create|add|make|write)\b", cleaned) and re.search(r"\b(note|notes)\b", cleaned):
+        # Extract note title
+        title_match = re.search(r"(?:note|notes)\s+(?:called|named|titled)?\s*([^,]+?)(?=\s+(?:in|to|with|saying)|$)", cleaned)
+        if title_match:
+            title = title_match.group(1).strip()
+        else:
+            title = _extract_after_keywords(text, lowered, ["note ", "notes "])
+        
+        # Extract folder name
+        folder_match = re.search(r"(?:in|to)\s+(?:folder\s+)?([a-z0-9 ]+?)(?:\s+folder)?(?=\s+(?:called|named|with|saying)|$)", cleaned)
+        folder_name = folder_match.group(1).strip() if folder_match else "Notes"
+        
+        # Extract body
+        body = ""
+        body_match = re.search(r"(?:saying|that|with|body)\s+(.+?)$", lowered)
+        if body_match:
+            body = body_match.group(1).strip()
+        
+        return Intent(
+            name="create_note",
+            entities={"title": title or "", "folder_name": folder_name, "body": body},
+            confidence=0.88,
+            raw_text=text,
+        )
 
     if re.search(r"\b(type|write|enter|input|dictate)\b", cleaned):
         content = _extract_after_keywords(text, lowered, ["type ", "write ", "enter ", "input ", "dictate "])
@@ -373,5 +443,31 @@ def parse_intent(text: str, context=None) -> Intent:
         seconds_match = re.search(r"(\d+(?:\.\d+)?)", cleaned)
         seconds = float(seconds_match.group(1)) if seconds_match else 1.0
         return Intent(name="wait", entities={"seconds": seconds}, confidence=0.8, raw_text=text)
+
+    # Reminder creation
+    if re.search(r"\b(create|add|make|set)\b", cleaned) and re.search(r"\b(reminder|reminders)\b", cleaned):
+        # Extract reminder name/title
+        name_match = re.search(r"(?:reminder|reminders)\s+(?:to\s+|for\s+|called\s+|named\s+)?([^,]+)", cleaned)
+        if name_match:
+            name = name_match.group(1).strip()
+        else:
+            name = _extract_after_keywords(text, lowered, ["reminder ", "reminders "])
+        
+        # Extract list name
+        list_match = re.search(r"(?:in|to)\s+(?:list\s+)?([a-z0-9 ]+?)(?:\s+list)?(?=\s+(?:to|for|called|named|reminder)|$)", cleaned)
+        list_name = list_match.group(1).strip() if list_match else "Reminders"
+        
+        # Extract notes/body
+        body = ""
+        body_match = re.search(r"(?:saying|that|with note|with notes|note)\s+(.+?)$", lowered)
+        if body_match:
+            body = body_match.group(1).strip()
+        
+        return Intent(
+            name="create_reminder",
+            entities={"name": name or "", "list_name": list_name, "body": body},
+            confidence=0.88,
+            raw_text=text,
+        )
 
     return Intent(name="unknown", entities={"text": text}, confidence=0.0, raw_text=text)

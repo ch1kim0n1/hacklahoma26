@@ -36,13 +36,19 @@ def load_plugins(plugins_dir: str, user_config: dict):
         if platforms is not None and sys.platform not in platforms:
             continue
 
-        module = importlib.import_module(f"plugins.{plugin_dir.name}")
+        try:
+            module = importlib.import_module(f"plugins.{plugin_dir.name}")
 
-        api = PluginAPI(
-            plugin_config=user_config[plugin_id],
-            tools=tools,
-        )
+            api = PluginAPI(
+                plugin_config=user_config[plugin_id],
+                tools=tools,
+            )
 
-        module.register(api)
+            module.register(api)
+        except Exception as exc:
+            # Plugin dependencies can be optional (e.g. Google OAuth libs).
+            # Skip failed plugins so other tools can still load.
+            print(f"[bridge] Skipping plugin '{plugin_id}' due to error: {exc}", file=sys.stderr)
+            continue
 
     return tools

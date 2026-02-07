@@ -4,10 +4,15 @@ from .tools import list_messages_tool, get_message_tool, send_message_tool
 def register(api):
     cfg = api.plugin_config
 
+    credentials_path = cfg.get("credentials_path")
+    if not credentials_path:
+        # Plugin enabled but not configured; don't register tools.
+        return
+
     service = get_google_service(
         api_name="gmail",
         api_version="v1",
-        credentials_path=cfg["credentials_path"],
+        credentials_path=credentials_path,
         token_path=cfg.get("token_path", "token.json")
     )
 

@@ -29,6 +29,13 @@ DEFAULT_PERMISSION_PROFILE = {
     "send_email": True,
     "send_message": True,
     "wait": True,
+    "mcp_create_reminder": True,
+    "mcp_create_note": True,
+    "mcp_list_reminders": True,
+    "mcp_list_notes": True,
+    "mcp_get_events": True,
+    "mcp_create_event": True,
+    "autofill_login": True,
 }
 
 
@@ -41,6 +48,7 @@ class PixelLinkRuntime:
         permission_profile: dict[str, bool] | None = None,
         enable_kill_switch: bool = True,
         verbose: bool = True,
+        mcp_tools: dict[str, Any] | None = None,
     ) -> None:
         self.session = SessionContext()
         self.guard = SafetyGuard()
@@ -48,10 +56,15 @@ class PixelLinkRuntime:
         if enable_kill_switch:
             self.kill_switch.start()
         self.enable_kill_switch = enable_kill_switch
-        self.planner = ActionPlanner()
+        self.mcp_tools = mcp_tools or {}
+        self.planner = ActionPlanner(mcp_tools=self.mcp_tools)
         self.executor = ExecutionEngine(self.kill_switch, dry_run=dry_run, verbose=verbose)
         self.executor.set_speed(speed)
         self.guard.set_allowed_actions(permission_profile or DEFAULT_PERMISSION_PROFILE)
+        
+        # Initialize file system context in background
+        import threading
+        threading.Thread(target=self.session.filesystem.index_files, daemon=True).start()
 
     def close(self) -> None:
         if self.enable_kill_switch:
@@ -92,9 +105,69 @@ class PixelLinkRuntime:
                     "open Notes",
                     "type Hello world",
                     "reply email saying I'll send the file tomorrow",
+                    "create reminder Buy milk",
+                    "create note Meeting notes in Work",
+                    "browse for machine learning tutorials",
+                    "find file report.pdf",
+                    "login to github",
                 ],
             )
-
+        
+        # Handle file search
+        if intent.name == "search_file":
+            query = intent.entities.get("query", "")
+            matches = self.session.filesystem.search_files(query, limit=10)
+            if matches:
+                message = f"Found {len(matches)} file(s) matching '{query}':\n"
+                for i, file_info in enumerate(matches[:5], 1):
+                    message += f"  {i}. {file_info.name} ({file_info.path})\n"
+                if len(matches) > 5:
+                    message += f"  ... and {len(matches) - 5} more"
+                return self._response("completed", message, source=source, intent=intent)
+            else:
+                return self._response(
+                    "completed",
+                    f"No files found matching '{query}'.",
+                    source=source,
+                    intent=intent,
+                )        
+        # Handle login/autofill
+        if intent.name == "login":
+            service = intent.entities.get("service", "")
+            from core.context.password_manager import get_password_manager
+            
+            pm = get_password_manager()
+            cred = pm.get_credential(service)
+            
+            if cred:
+                # Create steps for autofill
+                from core.planner.action_planner import ActionStep
+                
+                steps = [
+                    ActionStep("type_text", {"content": cred.username}, False, "Enter username"),
+                    ActionStep("press_key", {"key": "tab"}, False, "Move to password field"),
+                    ActionStep("type_text", {"content": cred.password}, False, "Enter password"),
+                ]
+                
+                result = self.executor.execute_steps(steps, self.guard)
+                
+                if result.completed:
+                    return self._response(
+                        "completed",
+                        f"Autofilled credentials for {service} ({cred.username})",
+                        source=source,
+                        intent=intent,
+                        steps=steps,
+                    )
+                else:
+                    return self._response("error", "Failed to autofill credentials", source=source, intent=intent)
+            else:
+                return self._response(
+                    "error",
+                    f"No credentials found for '{service}' in password manager. Please add them to your Keychain first.",
+                    source=source,
+                    intent=intent,
+                )
         if intent.name == "send_text":
             recipient = str(intent.entities.get("target", "")).strip()
             content = str(intent.entities.get("content", "")).strip()
@@ -167,6 +240,28 @@ class PixelLinkRuntime:
         safety = self.guard.validate_plan(steps)
         if not safety.allowed:
             return self._response("blocked", safety.reason, source=source, intent=intent, steps=steps)
+
+        # Track browsing history for search intents
+        if intent.name in {"search_web", "search_youtube", "open_website"}:
+            for step in steps:
+                if step.action == "open_url":
+                    url = step.params.get("url", "")
+                    search_query = intent.entities.get("query", "")
+                    self.session.add_browsing_entry(url, search_query=search_query)
+
+        # Handle MCP async actions
+        if any(step.action.startswith("mcp_") for step in steps):
+            import asyncio
+            result = asyncio.run(self._execute_mcp_steps(steps))
+            if result.get("error"):
+                return self._response("error", result["error"], source=source, intent=intent, steps=steps)
+            return self._response(
+                "completed",
+                result.get("message", "Task completed successfully."),
+                source=source,
+                intent=intent,
+                steps=steps,
+            )
 
         result = self.executor.execute_steps(steps, self.guard)
         self._record_last_app(steps)
@@ -241,6 +336,26 @@ class PixelLinkRuntime:
             source=source,
             pending_confirmation=True,
         )
+
+    async def _execute_mcp_steps(self, steps: list[Any]) -> dict[str, Any]:
+        """Execute MCP tool calls asynchronously."""
+        try:
+            for step in steps:
+                if step.action == "mcp_create_reminder":
+                    tool = self.mcp_tools.get("reminders_create_reminder")
+                    if not tool:
+                        return {"error": "Reminders tool not available"}
+                    result = await tool(**step.params)
+                    return {"message": f"Created reminder '{result['name']}' in list '{result['list']}'"}
+                elif step.action == "mcp_create_note":
+                    tool = self.mcp_tools.get("notes_create_note")
+                    if not tool:
+                        return {"error": "Notes tool not available"}
+                    result = await tool(**step.params)
+                    return {"message": f"Created note '{result['title']}' in folder '{result['folder']}'"}
+            return {"message": "Task completed"}
+        except Exception as e:
+            return {"error": f"MCP execution failed: {str(e)}"}
 
     def _record_last_app(self, steps: list[Any]) -> None:
         for step in steps:

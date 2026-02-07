@@ -22,6 +22,44 @@ class OSController:
         for char in dangerous_chars:
             if char in app_name:
                 raise ValueError(f"Invalid app name: contains dangerous character '{char}'")
+    
+    def is_app_running(self, app_name: str) -> bool:
+        """Check if an application is currently running."""
+        if not app_name:
+            return False
+        
+        self._validate_app_name(app_name)
+        system = platform.system().lower()
+        
+        try:
+            if system == "darwin":
+                # Use osascript to check if app is running
+                result = subprocess.run(
+                    ["osascript", "-e", f'tell application "System Events" to (name of processes) contains "{app_name}"'],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                )
+                return result.stdout.strip().lower() == "true"
+            elif system == "windows":
+                result = subprocess.run(
+                    ["tasklist", "/FI", f"IMAGENAME eq {app_name}.exe"],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                )
+                return app_name.lower() in result.stdout.lower()
+            else:  # Linux
+                result = subprocess.run(
+                    ["pgrep", "-f", app_name],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                )
+                return bool(result.stdout.strip())
+        except Exception:
+            # If we can't determine, assume not running (will try to open)
+            return False
 
     def _validate_url(self, url: str) -> None:
         parsed = urlparse(url)
@@ -35,6 +73,16 @@ class OSController:
             raise ValueError("App name is required")
 
         self._validate_app_name(app_name)
+        
+        # Check if app is already running - if so, just focus it
+        if self.is_app_running(app_name):
+            try:
+                self.focus_app(app_name)
+                return  # App was already running, we focused it
+            except Exception:
+                # If focus fails, fall through to opening
+                pass
+        
         system = platform.system().lower()
 
         try:

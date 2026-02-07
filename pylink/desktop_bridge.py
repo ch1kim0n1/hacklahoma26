@@ -4,9 +4,15 @@ import json
 import os
 import signal
 import sys
+from pathlib import Path
 from typing import Any
 
 from core.runtime.orchestrator import DEFAULT_PERMISSION_PROFILE, PixelLinkRuntime
+
+# Add parent directory to path to import bridge
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from bridge import load_plugins
 
 
 def _read_json_line() -> dict[str, Any] | None:
@@ -35,12 +41,38 @@ def main() -> int:
     speed = float(os.getenv("PIXELINK_SPEED", "1.0"))
     enable_kill_switch = _as_bool(os.getenv("PIXELINK_ENABLE_KILL_SWITCH"), default=False)
 
+    calendar_credentials = os.getenv("PIXELINK_CALENDAR_CREDENTIALS_PATH")
+    calendar_token = os.getenv("PIXELINK_CALENDAR_TOKEN_PATH")
+    gmail_credentials = os.getenv("PIXELINK_GMAIL_CREDENTIALS_PATH")
+    gmail_token = os.getenv("PIXELINK_GMAIL_TOKEN_PATH")
+
+    # Load MCP plugins
+    user_config: dict[str, dict[str, Any]] = {
+        "reminders-mcp": {},
+        "notes-mcp": {},
+        "calendar-mcp": {
+            **({"credentials_path": calendar_credentials} if calendar_credentials else {}),
+            **({"token_path": calendar_token} if calendar_token else {}),
+        },
+        "gmail-mcp": {
+            **({"credentials_path": gmail_credentials} if gmail_credentials else {}),
+            **({"token_path": gmail_token} if gmail_token else {}),
+        },
+    }
+    try:
+        mcp_tools = load_plugins(ROOT / "plugins", user_config)
+        tool_map = {tool["name"]: tool["fn"] for tool in mcp_tools}
+    except Exception as e:
+        _write_json({"status": "warning", "message": f"Could not load MCP plugins: {e}"})
+        tool_map = {}
+
     runtime = PixelLinkRuntime(
         dry_run=dry_run,
         speed=speed,
         permission_profile=DEFAULT_PERMISSION_PROFILE,
         enable_kill_switch=enable_kill_switch,
         verbose=False,
+        mcp_tools=tool_map,
     )
 
     running = True
