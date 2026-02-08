@@ -6,6 +6,7 @@ from typing import Any
 
 from core.context.session import SessionContext
 from core.executor.engine import ExecutionEngine
+from core.nlu.affection_model import AffectionNLUModel
 from core.nlu.intents import Intent
 from core.nlu.parser import parse_intent
 from core.planner.action_planner import ActionPlanner
@@ -49,6 +50,8 @@ class PixelLinkRuntime:
         enable_kill_switch: bool = True,
         verbose: bool = True,
         mcp_tools: dict[str, Any] | None = None,
+        mood_low_threshold: float = 42.0,
+        mood_critical_threshold: float = 25.0,
     ) -> None:
         self.session = SessionContext()
         self.guard = SafetyGuard()
@@ -59,6 +62,11 @@ class PixelLinkRuntime:
         self.mcp_tools = mcp_tools or {}
         self.planner = ActionPlanner(mcp_tools=self.mcp_tools)
         self.executor = ExecutionEngine(self.kill_switch, dry_run=dry_run, verbose=verbose)
+        self.affection_nlu = AffectionNLUModel(
+            low_threshold=mood_low_threshold,
+            critical_threshold=mood_critical_threshold,
+        )
+        self._current_affection: dict[str, Any] | None = None
         self.executor.set_speed(speed)
         self.guard.set_allowed_actions(permission_profile or DEFAULT_PERMISSION_PROFILE)
         
@@ -86,6 +94,10 @@ class PixelLinkRuntime:
         if not cleaned_text:
             return self._response("idle", "No input provided.", source=source)
 
+        affection_assessment = self.affection_nlu.analyze(cleaned_text, self.session)
+        self._current_affection = affection_assessment.to_dict()
+        self.session.record_affection(self._current_affection, cleaned_text)
+
         if self.session.pending_clarification:
             return self._handle_clarification(cleaned_text, source)
 
@@ -94,6 +106,33 @@ class PixelLinkRuntime:
 
         if self.session.pending_steps:
             return self._handle_pending(intent.name, source)
+
+        if intent.name == "check_mood":
+            mood_percent = self._current_affection.get("mood_percent", 0.0)
+            risk_level = self._current_affection.get("risk_level", "low")
+            message = (
+                f"Current mood signal: {mood_percent:.1f}% ({risk_level}). "
+                f"{self._current_affection.get('intervention', {}).get('message', '')}"
+            ).strip()
+            return self._response(
+                "completed",
+                message,
+                source=source,
+                intent=intent,
+                suggestions=self._current_affection.get("intervention", {}).get("suggestions", []),
+            )
+
+        if self._should_pause_for_low_mood(intent.name):
+            return self._response(
+                "support_required",
+                self._current_affection.get("intervention", {}).get(
+                    "message",
+                    "Mood is critically low. Automation paused for safety.",
+                ),
+                source=source,
+                intent=intent,
+                suggestions=self._current_affection.get("intervention", {}).get("suggestions", []),
+            )
 
         if intent.name == "unknown":
             return self._response(
@@ -110,6 +149,7 @@ class PixelLinkRuntime:
                     "browse for machine learning tutorials",
                     "find file report.pdf",
                     "login to github",
+                    "check my mood",
                 ],
             )
         
@@ -363,6 +403,12 @@ class PixelLinkRuntime:
                 self.session.set_last_app(step.params.get("app", ""))
                 break
 
+    def _should_pause_for_low_mood(self, intent_name: str) -> bool:
+        affection = self._current_affection or {}
+        if not affection.get("should_pause_automation"):
+            return False
+        return intent_name not in {"check_mood", "confirm", "cancel"}
+
     def _response(
         self,
         status: str,
@@ -390,6 +436,14 @@ class PixelLinkRuntime:
         if intent is not None:
             serialized_intent = asdict(intent)
 
+        active_affection = self._current_affection or self.session.last_affection or {}
+        intervention = active_affection.get("intervention", {})
+        intervention_suggestions = intervention.get("suggestions", []) if active_affection.get("should_intervene") else []
+        final_suggestions = _merge_unique_suggestions(suggestions or [], intervention_suggestions)
+        affection_notice = ""
+        if active_affection.get("should_intervene") and status not in {"blocked", "error", "support_required"}:
+            affection_notice = intervention.get("message", "")
+
         return {
             "status": status,
             "message": message,
@@ -401,7 +455,9 @@ class PixelLinkRuntime:
             "clarification_prompt": (self.session.pending_clarification or {}).get("prompt", ""),
             "last_app": self.session.last_app,
             "history_count": len(self.session.history),
-            "suggestions": suggestions or [],
+            "suggestions": final_suggestions,
+            "affection": active_affection,
+            "affection_notice": affection_notice,
         }
 
 
@@ -415,3 +471,20 @@ def _clean_clarified_target(value: str) -> str:
     )
     cleaned = " ".join(cleaned.split())
     return cleaned.strip().strip('"').strip("'").strip("“”")
+
+
+def _merge_unique_suggestions(primary: list[str], secondary: list[str], limit: int = 8) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for value in primary + secondary:
+        normalized = value.strip()
+        if not normalized:
+            continue
+        lowered = normalized.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        merged.append(normalized)
+        if len(merged) >= limit:
+            break
+    return merged

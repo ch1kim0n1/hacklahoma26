@@ -15,6 +15,8 @@ class SessionContext:
     pending_clarification: dict[str, Any] | None = None
     browsing_history: BrowsingHistory = field(default_factory=BrowsingHistory)
     filesystem: FileSystemContext = field(default_factory=FileSystemContext)
+    mood_history: List[dict[str, Any]] = field(default_factory=list)
+    last_affection: dict[str, Any] | None = None
 
     def record_intent(self, intent_name: str, raw_text: str) -> None:
         self.last_intent = intent_name
@@ -38,6 +40,18 @@ class SessionContext:
 
     def clear_pending_clarification(self) -> None:
         self.pending_clarification = None
+
+    def record_affection(self, assessment: dict[str, Any], raw_text: str) -> None:
+        payload = {
+            "mood_percent": assessment.get("mood_percent", 0.0),
+            "risk_level": assessment.get("risk_level", "low"),
+            "generated_at": assessment.get("generated_at"),
+            "raw_text": raw_text,
+        }
+        self.last_affection = assessment
+        self.mood_history.append(payload)
+        if len(self.mood_history) > 40:
+            self.mood_history = self.mood_history[-40:]
     
     def add_browsing_entry(self, url: str, title: str = "", search_query: str = "") -> None:
         """Add a URL to browsing history."""
@@ -49,6 +63,11 @@ class SessionContext:
         
         if self.last_app:
             parts.append(f"Current app: {self.last_app}")
+
+        if self.last_affection:
+            mood = self.last_affection.get("mood_percent", 0.0)
+            risk = self.last_affection.get("risk_level", "low")
+            parts.append(f"Recent mood: {mood:.1f}% ({risk})")
         
         browsing_summary = self.browsing_history.get_context_summary()
         if browsing_summary and "No browsing" not in browsing_summary:

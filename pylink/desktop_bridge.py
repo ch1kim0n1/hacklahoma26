@@ -131,6 +131,7 @@ def main() -> int:
                         "clarification_prompt": (runtime.session.pending_clarification or {}).get("prompt", ""),
                         "last_app": runtime.session.last_app,
                         "history_count": len(runtime.session.history),
+                        "affection": runtime.session.last_affection,
                     }
                 )
                 continue

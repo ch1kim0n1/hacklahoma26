@@ -238,6 +238,12 @@ def parse_intent(text: str, context=None) -> Intent:
     if lowered in {"cancel", "stop", "abort", "no", "n", "nevermind", "nope", "never mind"}:
         return Intent(name="cancel", confidence=1.0, raw_text=text)
 
+    if re.search(r"\b(check|show|analyze|what(?:'s| is)|how)\b", cleaned) and re.search(
+        r"\b(mood|affection|emotional state|emotion)\b",
+        cleaned,
+    ):
+        return Intent(name="check_mood", confidence=0.9, raw_text=text)
+
     # File search - check early before general search patterns
     if re.search(r"\b(find file|search file|locate file|find document|search for file|search document)\b", cleaned):
         query = _extract_after_keywords(
