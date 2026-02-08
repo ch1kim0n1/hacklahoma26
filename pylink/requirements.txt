@@ -1,6 +1,11 @@
 pyautogui>=0.9.54
 pynput>=1.7.7
 
+# Eye control (optional: for gaze + blink input)
+# Install for eye and blink control; PixelLink runs without these if unavailable.
+opencv-python>=4.8.0
+mediapipe>=0.10.0
+
 # Voice module dependencies
 # TTS: ElevenLabs Flash v2.5
 elevenlabs>=1.0.0
