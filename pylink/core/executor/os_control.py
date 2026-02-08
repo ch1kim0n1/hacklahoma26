@@ -7,10 +7,30 @@ from urllib.parse import urlparse
 class OSController:
     # Common app name whitelist for validation (can be extended)
     COMMON_APPS = {
-        "notes", "mail", "safari", "chrome", "firefox", "terminal", "iterm",
-        "vscode", "code", "slack", "spotify", "calendar", "messages",
-        "notepad", "word", "excel", "powerpoint", "outlook"
+        "notes", "mail", "safari", "chrome", "google chrome", "firefox",
+        "terminal", "iterm", "vscode", "code", "slack", "spotify",
+        "calendar", "messages", "notepad", "word", "excel", "powerpoint",
+        "outlook",
     }
+
+    # Map common shorthand names to actual macOS application names
+    APP_NAME_ALIASES = {
+        "chrome": "Google Chrome",
+        "vscode": "Visual Studio Code",
+        "code": "Visual Studio Code",
+        "iterm": "iTerm",
+        "word": "Microsoft Word",
+        "excel": "Microsoft Excel",
+        "powerpoint": "Microsoft PowerPoint",
+        "outlook": "Microsoft Outlook",
+        "teams": "Microsoft Teams",
+    }
+
+    def _resolve_app_name(self, app_name: str) -> str:
+        """Resolve common app name aliases to actual macOS app names."""
+        if platform.system().lower() != "darwin":
+            return app_name
+        return self.APP_NAME_ALIASES.get(app_name.lower(), app_name)
 
     def _validate_app_name(self, app_name: str) -> None:
         """Validate app name to prevent shell injection"""
@@ -27,8 +47,9 @@ class OSController:
         """Check if an application is currently running."""
         if not app_name:
             return False
-        
+
         self._validate_app_name(app_name)
+        app_name = self._resolve_app_name(app_name)
         system = platform.system().lower()
         
         try:
@@ -73,7 +94,8 @@ class OSController:
             raise ValueError("App name is required")
 
         self._validate_app_name(app_name)
-        
+        app_name = self._resolve_app_name(app_name)
+
         # Check if app is already running - if so, just focus it
         if self.is_app_running(app_name):
             try:
@@ -125,6 +147,7 @@ class OSController:
             raise ValueError("App name is required")
 
         self._validate_app_name(app_name)
+        app_name = self._resolve_app_name(app_name)
         system = platform.system().lower()
 
         if system == "darwin":
@@ -158,6 +181,7 @@ class OSController:
         if not app_name:
             raise ValueError("App name is required")
         self._validate_app_name(app_name)
+        app_name = self._resolve_app_name(app_name)
         system = platform.system().lower()
         try:
             if system == "darwin":

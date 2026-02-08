@@ -75,13 +75,14 @@ Available intents:
 10. "browser_fill_form" - entities: {"instruction": "<form details>", "fields": {}}
 11. "browser_click" - entities: {"element": "<what to click>"}
 12. "browser_extract" - entities: {"content_type": "<what to extract>"}
-13. "create_reminder" - entities: {"name": "<reminder text>", "due_date_iso": "<optional date>"}
-14. "create_note" - entities: {"title": "<note title>", "body": "<note content>"}
-15. "login" - entities: {"service": "<service name>"}
-16. "confirm" - User confirms action
-17. "cancel" - User cancels action
-18. "exit" - User wants to quit
-19. "unknown" - Cannot understand
+13. "close_browser" - entities: {} (user wants to close/quit the browser)
+14. "create_reminder" - entities: {"name": "<reminder text>", "due_date_iso": "<optional date>"}
+15. "create_note" - entities: {"title": "<note title>", "body": "<note content>"}
+16. "login" - entities: {"service": "<service name>"}
+17. "confirm" - User confirms action
+18. "cancel" - User cancels action
+19. "exit" - User wants to quit
+20. "unknown" - Cannot understand
 
 CLARIFICATION RULES:
 - If user says "send a message" but doesn't specify recipient, ask: "Who should I send this message to?"
@@ -96,6 +97,13 @@ CONFIRMATION RULES (for sensitive actions):
 - For emails: "I'll reply with: '{content}'. Should I send this?"
 - For forms: "I'm about to submit this form with your information. Please confirm."
 - For login: "I'll log into {service} using your saved credentials. Proceed?"
+
+IMPORTANT CONTEXT RULES:
+- You DO have access to the conversation history and session context provided below.
+- NEVER say you "can't access" previous messages, history, or context. You CAN see it.
+- Use the provided context to understand what the user is referring to.
+- If context references previous actions (apps opened, messages sent, browser tasks), use that information.
+- Always respond based on what you know from the conversation and context provided.
 
 Be conversational and helpful in your user_message. Don't be robotic.
 """
@@ -217,17 +225,27 @@ class ConversationalAI:
             }
 
         try:
-            # Build context message
+            # Build rich context message from session
             context_info = ""
             if context:
                 if context.get("last_intent"):
-                    context_info += f"Previous intent: {context['last_intent']}\n"
+                    context_info += f"Previous action: {context['last_intent']}\n"
                 if context.get("last_app"):
-                    context_info += f"Last focused app: {context['last_app']}\n"
+                    context_info += f"Currently focused app: {context['last_app']}\n"
                 if context.get("pending_clarification"):
                     pending = context["pending_clarification"]
                     context_info += f"Pending clarification for: {pending.get('intent_name', 'unknown')}\n"
                     context_info += f"We were asking: {pending.get('prompt', '')}\n"
+                # Include recent session history for full context
+                recent_history = context.get("recent_history", [])
+                if recent_history:
+                    context_info += "Recent session actions:\n"
+                    for entry in recent_history[-5:]:
+                        context_info += f"  - {entry.get('intent', 'unknown')}: {entry.get('raw_text', '')}\n"
+                # Include browsing context
+                browsing_context = context.get("browsing_context", "")
+                if browsing_context:
+                    context_info += f"Browsing context: {browsing_context}\n"
 
             # Add user message to history
             user_message = f"{context_info}User said: \"{text}\""
@@ -255,8 +273,10 @@ class ConversationalAI:
             # Parse JSON response
             data = json.loads(response_text)
 
-            # Add assistant response to history
+            # Add assistant response to history (keep last 20 messages to avoid context overflow)
             self.conversation_history.append({"role": "assistant", "content": response_text})
+            if len(self.conversation_history) > 20:
+                self.conversation_history = self.conversation_history[-20:]
 
             # Store pending action if it's a sensitive action needing confirmation
             if data.get("status") == "confirm_sensitive":

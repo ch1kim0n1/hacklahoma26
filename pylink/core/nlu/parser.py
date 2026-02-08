@@ -290,6 +290,12 @@ def parse_intent(text: str, context=None) -> Intent:
     if re.search(r"\b(how am i|am i okay|am i alright|how do i seem|emotional report|full mood)\b", cleaned):
         return Intent(name="emotional_check_in", confidence=0.9, raw_text=text)
 
+    # Close browser intent
+    if re.search(r"\b(close|quit|exit|shut|stop|end|finish|done with)\b", cleaned) and re.search(
+        r"\b(browser|browsing|chrome|chromium|playwright)\b", cleaned
+    ):
+        return Intent(name="close_browser", entities={}, confidence=0.9, raw_text=text)
+
     # Browser automation intents (AI-powered browser control)
     # Fill form intent
     if re.search(r"\b(fill|fill out|complete|submit)\b", cleaned) and re.search(

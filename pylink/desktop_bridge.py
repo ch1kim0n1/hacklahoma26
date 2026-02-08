@@ -10,8 +10,11 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-# Load environment variables from .env file (checks current and parent directories)
-load_dotenv()
+# Load environment variables from .env file next to this script
+# (needed because Electron sets CWD to repo root, not pylink/)
+_PYLINK_DIR = Path(__file__).resolve().parent
+load_dotenv(_PYLINK_DIR / ".env")
+load_dotenv()  # Also check CWD / parent dirs as fallback
 
 from core.runtime.orchestrator import DEFAULT_PERMISSION_PROFILE, PixelLinkRuntime
 
@@ -22,6 +25,29 @@ from bridge import load_plugins
 
 
 _WRITE_LOCK = threading.Lock()
+
+# Strict pipeline state machine: idle -> listen -> processing -> action -> output -> idle
+# During action and output states, no new input is accepted (no interruptions)
+_PIPELINE_LOCK = threading.Lock()
+_pipeline_state = "idle"  # "idle", "listen", "processing", "action", "output"
+
+
+def _get_pipeline_state() -> str:
+    with _PIPELINE_LOCK:
+        return _pipeline_state
+
+
+def _set_pipeline_state(new_state: str) -> None:
+    global _pipeline_state
+    with _PIPELINE_LOCK:
+        _pipeline_state = new_state
+    _write_json({"status": "pipeline_state", "state": new_state})
+
+
+def _is_input_blocked() -> bool:
+    """Check if input is blocked (during action or output phases)."""
+    state = _get_pipeline_state()
+    return state in ("action", "output")
 
 
 def _read_json_line() -> dict[str, Any] | None:
@@ -286,6 +312,20 @@ def main() -> int:
             "model": _get_voice_model_state(),
         }
 
+    def _speak_pre_task(result: dict[str, Any]) -> None:
+        """Speak the pre-task announcement before executing."""
+        if not voice_controller or not voice_output_enabled:
+            return
+
+        pre_msg = str(result.get("pre_task_message", "")).strip()
+        if not pre_msg:
+            return
+
+        try:
+            voice_controller.speak(pre_msg, blocking=True)
+        except Exception:
+            pass
+
     def _speak_response(result: dict[str, Any]) -> None:
         """Speak the response text. Uses blocking=True for sequential state management."""
         if not voice_controller or not voice_output_enabled:
@@ -363,12 +403,36 @@ def main() -> int:
             action = payload.get("action")
 
             if action == "process_input":
+                # Block input during action/output states (no interruptions)
+                if _is_input_blocked():
+                    _write_json(
+                        _build_error(
+                            message="System is busy. Please wait until the current task finishes.",
+                            code="INPUT_BLOCKED",
+                            request_id=request_id,
+                            extra={**_runtime_state(runtime), "voice": _voice_state(), "pipeline_state": _get_pipeline_state()},
+                        )
+                    )
+                    continue
+
                 text = str(payload.get("text", ""))
                 source = str(payload.get("source", "text"))
                 try:
+                    _set_pipeline_state("processing")
                     result = runtime.handle_input(text, source=source)
+
+                    # Speak pre-task announcement before action
+                    _speak_pre_task(result)
+
+                    # Action phase
+                    _set_pipeline_state("action")
+
+                    # Output phase - speak the response
+                    _set_pipeline_state("output")
                     _speak_response(result)
+
                     result["voice"] = _voice_state()
+                    result["pipeline_state"] = "idle"
                     if request_id is not None:
                         result["request_id"] = request_id
                     _write_json(result)
@@ -382,9 +446,23 @@ def main() -> int:
                             extra={**_runtime_state(runtime), "voice": _voice_state()},
                         )
                     )
+                finally:
+                    _set_pipeline_state("idle")
                 continue
 
             if action == "capture_voice_input":
+                # Block input during action/output states (no interruptions)
+                if _is_input_blocked():
+                    _write_json(
+                        _build_error(
+                            message="System is busy. Please wait until the current task finishes.",
+                            code="INPUT_BLOCKED",
+                            request_id=request_id,
+                            extra={**_runtime_state(runtime), "voice": _voice_state(), "pipeline_state": _get_pipeline_state()},
+                        )
+                    )
+                    continue
+
                 if not voice_controller or not voice_input_enabled:
                     _write_json(
                         _build_voice_error(
@@ -395,16 +473,18 @@ def main() -> int:
                     )
                     continue
 
+                # LISTEN phase
+                _set_pipeline_state("listen")
                 prompt = str(payload.get("prompt", "")).strip()
                 try:
                     if prompt and voice_output_enabled:
-                        # Use blocking=True to ensure speaking completes before listening
                         voice_controller.speak(prompt, blocking=True)
                     transcript = voice_controller.listen(
                         allow_text_fallback=False,
                         status_callback=lambda _status: None,
                     ).strip()
                 except Exception as exc:
+                    _set_pipeline_state("idle")
                     _write_json(
                         _build_voice_error(
                             code="VOICE_INPUT_FAILED",
@@ -417,6 +497,7 @@ def main() -> int:
                     continue
 
                 if not transcript:
+                    _set_pipeline_state("idle")
                     stt_error = voice_controller.last_stt_error if voice_controller else ""
                     if stt_error:
                         _write_json(
@@ -453,10 +534,22 @@ def main() -> int:
                     continue
 
                 try:
+                    # PROCESSING phase
+                    _set_pipeline_state("processing")
                     result = runtime.handle_input(transcript, source="voice")
+
+                    # Speak pre-task announcement before action
+                    _speak_pre_task(result)
+
+                    # ACTION phase
+                    _set_pipeline_state("action")
+
+                    # OUTPUT phase - speak result
+                    _set_pipeline_state("output")
                     result["transcript"] = transcript
                     result["voice"] = _voice_state()
                     _speak_response(result)
+                    result["pipeline_state"] = "idle"
                     if request_id is not None:
                         result["request_id"] = request_id
                     _write_json(result)
@@ -475,6 +568,8 @@ def main() -> int:
                             },
                         )
                     )
+                finally:
+                    _set_pipeline_state("idle")
                 continue
 
             if action == "update_preferences":
