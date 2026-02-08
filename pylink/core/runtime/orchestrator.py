@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import threading
 from dataclasses import asdict
 from typing import Any
 
@@ -61,9 +62,9 @@ class PixelLinkRuntime:
         self.executor = ExecutionEngine(self.kill_switch, dry_run=dry_run, verbose=verbose)
         self.executor.set_speed(speed)
         self.guard.set_allowed_actions(permission_profile or DEFAULT_PERMISSION_PROFILE)
-        
+        self._cursor_lock = threading.Lock()
+
         # Initialize file system context in background
-        import threading
         threading.Thread(target=self.session.filesystem.index_files, daemon=True).start()
 
     def close(self) -> None:
@@ -80,6 +81,12 @@ class PixelLinkRuntime:
             self.executor.set_speed(speed)
         if permission_profile is not None:
             self.guard.set_allowed_actions(permission_profile)
+
+    def move_cursor(self, x: int, y: int) -> None:
+        """Move the system mouse cursor to (x, y). Thread-safe for use from eye control."""
+        with self._cursor_lock:
+            # Eye tracking updates at video frame rate; instant moves avoid cumulative lag.
+            self.executor.mouse.move_to(x, y, duration=0.0)
 
     def handle_input(self, raw_text: str, source: str = "text") -> dict[str, Any]:
         cleaned_text = " ".join((raw_text or "").strip().split())
