@@ -40,23 +40,36 @@ class VoiceController:
         """
         self.enable_tts = enable_tts
         self.enable_stt = enable_stt
+        self._init_errors: dict[str, str] = {}
 
         self._tts: Optional[TextToSpeech] = None
         self._stt: Optional[SpeechToText] = None
 
         if enable_tts:
-            self._tts = TextToSpeech(api_key=api_key, voice_id=voice_id)
+            try:
+                self._tts = TextToSpeech(api_key=api_key, voice_id=voice_id)
+            except Exception as exc:
+                self._tts = None
+                self.enable_tts = False
+                self._init_errors["tts"] = str(exc)
+                logging.info("Failed to initialize TTS: %s", exc)
 
         if enable_stt:
-            self._stt = SpeechToText(model_size=whisper_model)
+            try:
+                self._stt = SpeechToText(model_size=whisper_model)
+            except Exception as exc:
+                self._stt = None
+                self.enable_stt = False
+                self._init_errors["stt"] = str(exc)
+                logging.info("Failed to initialize STT: %s", exc)
 
         self._is_active = False
         self._stop_event = threading.Event()
 
         logging.info(
             "VoiceController initialized (TTS=%s, STT=%s)",
-            "enabled" if enable_tts else "disabled",
-            "enabled" if enable_stt else "disabled",
+            "enabled" if self._tts else "disabled",
+            "enabled" if self._stt else "disabled",
         )
 
     def speak(self, text: str, blocking: bool = True) -> bool:
@@ -75,23 +88,37 @@ class VoiceController:
 
         return self._tts.speak(text, blocking=blocking)
 
-    def listen(self) -> str:
+    def listen(
+        self,
+        allow_text_fallback: bool = True,
+        status_callback: Optional[Callable[[str], None]] = None,
+    ) -> str:
         """Listen for speech and return transcribed text.
+
+        Args:
+            allow_text_fallback: If True and STT is unavailable, fallback to stdin.
+                Set False for non-interactive environments (like desktop bridge).
 
         Returns:
             Transcribed text, or empty string if nothing detected.
         """
         if not self.enable_stt or not self._stt:
-            # Fallback to text input
-            return input("Voice> ").strip()
+            if allow_text_fallback:
+                # Fallback to text input
+                return input("Voice> ").strip()
+            return ""
 
-        def status_callback(status: str):
-            if status == "listening":
-                print("🎤 Listening...")
-            elif status == "processing":
-                print("⏳ Processing...")
+        callback = status_callback
+        if callback is None:
+            def default_status_callback(status: str):
+                if status == "listening":
+                    print("🎤 Listening...")
+                elif status == "processing":
+                    print("⏳ Processing...")
 
-        return self._stt.listen(prompt_callback=status_callback)
+            callback = default_status_callback
+
+        return self._stt.listen(prompt_callback=callback)
 
     def listen_and_respond(
         self,
@@ -203,6 +230,28 @@ class VoiceController:
         if self._tts:
             return self._tts.list_voices()
         return []
+
+    @property
+    def tts_available(self) -> bool:
+        """Whether TTS is available."""
+        return self._tts is not None and self.enable_tts
+
+    @property
+    def stt_available(self) -> bool:
+        """Whether STT is available."""
+        return self._stt is not None and self.enable_stt
+
+    @property
+    def init_errors(self) -> dict[str, str]:
+        """Initialization errors keyed by subsystem name."""
+        return dict(self._init_errors)
+
+    @property
+    def last_stt_error(self) -> str:
+        """Last STT error message, if any."""
+        if self._stt and getattr(self._stt, "last_error", None):
+            return str(self._stt.last_error)
+        return ""
 
 
 def read_voice_input(voice: VoiceController, prompt: str = "") -> dict:

@@ -130,7 +130,7 @@ body {
   border-top: 1px solid var(--border);
   padding: 8px;
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: 1fr auto auto;
   gap: 8px;
 }
 
@@ -156,3 +156,20 @@ body {
   font-size: 0.84rem;
 }
 
+.command-form button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.voice-btn {
+  background: #fff;
+  color: var(--accent);
+  border: 1px solid #9cb1e6;
+  min-width: 70px;
+}
+
+.voice-btn.listening {
+  background: #ffe8de;
+  border-color: #e28d62;
+  color: #8f3f20;
+}

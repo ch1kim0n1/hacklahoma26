@@ -1,6 +1,7 @@
 const state = {
   runtime: null,
-  logs: []
+  logs: [],
+  voiceListening: false
 };
 
 const elements = {
@@ -9,6 +10,7 @@ const elements = {
   logArea: document.getElementById("logArea"),
   commandForm: document.getElementById("commandForm"),
   commandInput: document.getElementById("commandInput"),
+  voiceBtn: document.getElementById("voiceBtn"),
   hideBtn: document.getElementById("hideBtn")
 };
 
@@ -59,6 +61,27 @@ function setStatus(runtime) {
 function updateRuntime(runtime) {
   state.runtime = runtime;
   setStatus(runtime);
+  updateVoiceButtonState();
+}
+
+function updateVoiceButtonState() {
+  if (!elements.voiceBtn) {
+    return;
+  }
+  const backendOnline = state.runtime?.backend === "online";
+  const voiceInputEnabled = Boolean(state.runtime?.voice?.inputEnabled);
+  const enabled = backendOnline && voiceInputEnabled && !state.voiceListening;
+
+  elements.voiceBtn.disabled = !enabled;
+  elements.voiceBtn.classList.toggle("listening", state.voiceListening);
+
+  if (state.voiceListening) {
+    elements.voiceBtn.textContent = "Listening...";
+  } else if (!voiceInputEnabled) {
+    elements.voiceBtn.textContent = "Voice Off";
+  } else {
+    elements.voiceBtn.textContent = "Voice";
+  }
 }
 
 function classifyLevel(result) {
@@ -88,14 +111,53 @@ async function submitCommand(command) {
 
   try {
     const result = await window.pixelink.sendInput(trimmed, "text");
-    const level = classifyLevel(result);
-    appendLog(level, result.status || "Result", result.message || "");
-
-    if (result.pending_clarification && result.clarification_prompt) {
-      appendLog("warning", "Follow-up", result.clarification_prompt);
-    }
+    logResult(result);
   } catch (error) {
     appendLog("error", "Error", String(error.message || error));
+  }
+}
+
+function formatStructuredError(result) {
+  if (!result || !result.error || typeof result.error !== "object") {
+    return result?.message || "";
+  }
+  const code = result.error.code || "UNKNOWN";
+  const details = result.error.details || result.message || "No details";
+  return `[${code}] ${details}`;
+}
+
+function logResult(result) {
+  const level = classifyLevel(result);
+  const title = result?.status || "Result";
+  const message = result?.status === "error" ? formatStructuredError(result) : (result?.message || "");
+  appendLog(level, title, message);
+
+  if (result?.transcript) {
+    appendLog("info", "Heard", result.transcript);
+  }
+
+  if (result?.pending_clarification && result?.clarification_prompt) {
+    appendLog("warning", "Follow-up", result.clarification_prompt);
+  }
+}
+
+async function submitVoiceCommand() {
+  if (state.voiceListening) {
+    return;
+  }
+
+  state.voiceListening = true;
+  updateVoiceButtonState();
+  appendLog("info", "Voice", "Listening for command...");
+
+  try {
+    const result = await window.pixelink.captureVoiceInput();
+    logResult(result);
+  } catch (error) {
+    appendLog("error", "Voice Error", String(error.message || error));
+  } finally {
+    state.voiceListening = false;
+    updateVoiceButtonState();
   }
 }
 
@@ -103,6 +165,10 @@ function bindEvents() {
   elements.commandForm.addEventListener("submit", (event) => {
     event.preventDefault();
     submitCommand(elements.commandInput.value);
+  });
+
+  elements.voiceBtn.addEventListener("click", async () => {
+    await submitVoiceCommand();
   });
 
   elements.hideBtn.addEventListener("click", async () => {
@@ -117,11 +183,19 @@ async function boot() {
   updateRuntime(snapshot.runtime);
   appendLog("info", "PixelLink", "Console ready.");
 
+  if (!snapshot.runtime?.voice?.outputEnabled) {
+    appendLog("warning", "Voice Output", "Voice output is not available. Check voice config/API key.");
+  }
+
   window.pixelink.onRuntimeUpdate((runtime) => {
     updateRuntime(runtime);
   });
 
   window.pixelink.onBridgeError((payload) => {
+    if (payload && payload.error && typeof payload.error === "object") {
+      appendLog("error", "Bridge Error", `[${payload.error.code || "BRIDGE"}] ${payload.error.details || "Unknown error"}`);
+      return;
+    }
     appendLog("error", "Bridge Error", payload.error || "Unknown error");
   });
 
@@ -133,4 +207,3 @@ async function boot() {
 boot().catch((error) => {
   appendLog("error", "Fatal", String(error.message || error));
 });
-

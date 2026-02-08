@@ -59,6 +59,7 @@ class SpeechToText:
         self._stop_listening = False
         self._listen_lock = threading.Lock()
         self._pyaudio = None
+        self.last_error: Optional[str] = None
 
         logging.info(
             "SpeechToText initialized with model=%s, device=%s",
@@ -102,6 +103,7 @@ class SpeechToText:
         with self._listen_lock:
             self._is_listening = True
             self._stop_listening = False
+            self.last_error = None
 
             try:
                 if prompt_callback:
@@ -128,8 +130,8 @@ class SpeechToText:
                 return text
 
             except Exception as e:
-                logging.error("STT error: %s", str(e))
-                print(f"[STT Error: {e}]")
+                self.last_error = f"{type(e).__name__}: {e}"
+                logging.info("STT error: %s", str(e))
                 return ""
             finally:
                 self._is_listening = False

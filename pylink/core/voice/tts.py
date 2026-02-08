@@ -105,7 +105,6 @@ class TextToSpeech:
 
             except Exception as e:
                 logging.error("TTS error: %s", str(e))
-                print(f"[TTS Error: {e}]")
                 return False
             finally:
                 self._is_speaking = False
