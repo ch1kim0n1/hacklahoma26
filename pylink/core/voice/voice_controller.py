@@ -92,6 +92,7 @@ class VoiceController:
         self,
         allow_text_fallback: bool = True,
         status_callback: Optional[Callable[[str], None]] = None,
+        immediate_feedback: Optional[Callable[[str], None]] = None,
     ) -> str:
         """Listen for speech and return transcribed text.
 
@@ -102,6 +103,9 @@ class VoiceController:
         Returns:
             Transcribed text, or empty string if nothing detected.
         """
+        if immediate_feedback:
+            immediate_feedback("Listening")
+
         if not self.enable_stt or not self._stt:
             if allow_text_fallback:
                 # Fallback to text input
@@ -111,6 +115,11 @@ class VoiceController:
         callback = status_callback
         if callback is None:
             def default_status_callback(status: str):
+                if immediate_feedback:
+                    if status == "listening":
+                        immediate_feedback("Listening")
+                    elif status == "processing":
+                        immediate_feedback("Understanding")
                 if status == "listening":
                     print("🎤 Listening...")
                 elif status == "processing":
@@ -252,6 +261,11 @@ class VoiceController:
         if self._stt and getattr(self._stt, "last_error", None):
             return str(self._stt.last_error)
         return ""
+
+    def prewarm_stt_async(self) -> None:
+        """Preload STT model in background."""
+        if self._stt:
+            self._stt.prewarm_async()
 
 
 def read_voice_input(voice: VoiceController, prompt: str = "") -> dict:

@@ -1,5 +1,6 @@
 import platform
 import subprocess
+import time
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -11,6 +12,10 @@ class OSController:
         "vscode", "code", "slack", "spotify", "calendar", "messages",
         "notepad", "word", "excel", "powerpoint", "outlook"
     }
+
+    def __init__(self) -> None:
+        self._app_running_cache: dict[str, tuple[float, bool]] = {}
+        self._app_running_cache_ttl = 2.0
 
     def _validate_app_name(self, app_name: str) -> None:
         """Validate app name to prevent shell injection"""
@@ -27,10 +32,16 @@ class OSController:
         """Check if an application is currently running."""
         if not app_name:
             return False
-        
+
         self._validate_app_name(app_name)
+        cache_key = app_name.lower().strip()
+        cached = self._app_running_cache.get(cache_key)
+        now = time.monotonic()
+        if cached and (now - cached[0]) <= self._app_running_cache_ttl:
+            return cached[1]
+
         system = platform.system().lower()
-        
+
         try:
             if system == "darwin":
                 # Use osascript to check if app is running
@@ -40,7 +51,9 @@ class OSController:
                     text=True,
                     timeout=2,
                 )
-                return result.stdout.strip().lower() == "true"
+                is_running = result.stdout.strip().lower() == "true"
+                self._app_running_cache[cache_key] = (now, is_running)
+                return is_running
             elif system == "windows":
                 result = subprocess.run(
                     ["tasklist", "/FI", f"IMAGENAME eq {app_name}.exe"],
@@ -48,7 +61,9 @@ class OSController:
                     text=True,
                     timeout=2,
                 )
-                return app_name.lower() in result.stdout.lower()
+                is_running = app_name.lower() in result.stdout.lower()
+                self._app_running_cache[cache_key] = (now, is_running)
+                return is_running
             else:  # Linux
                 result = subprocess.run(
                     ["pgrep", "-f", app_name],
@@ -56,7 +71,9 @@ class OSController:
                     text=True,
                     timeout=2,
                 )
-                return bool(result.stdout.strip())
+                is_running = bool(result.stdout.strip())
+                self._app_running_cache[cache_key] = (now, is_running)
+                return is_running
         except Exception:
             # If we can't determine, assume not running (will try to open)
             return False
@@ -119,6 +136,8 @@ class OSController:
             raise RuntimeError(f"App '{app_name}' not found or not installed")
         except PermissionError:
             raise RuntimeError(f"Permission denied: Cannot open app '{app_name}'. Check accessibility permissions.")
+        else:
+            self._app_running_cache[app_name.lower().strip()] = (time.monotonic(), True)
 
     def focus_app(self, app_name: str) -> None:
         if not app_name:
@@ -129,15 +148,7 @@ class OSController:
 
         if system == "darwin":
             try:
-                # First open the app
-                subprocess.run(
-                    ["open", "-a", app_name],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                    check=True
-                )
-                # Then activate/focus it
+                # Direct activate avoids redundant open+activate when app is already running.
                 subprocess.run(
                     ["osascript", "-e", f'tell application "{app_name}" to activate'],
                     capture_output=True,
@@ -146,10 +157,22 @@ class OSController:
                     check=True
                 )
             except subprocess.CalledProcessError as e:
-                error_output = e.stderr.strip() if e.stderr else str(e)
-                raise RuntimeError(f"Failed to focus app '{app_name}': {error_output}")
+                # Fallback to opening app if activation fails.
+                try:
+                    subprocess.run(
+                        ["open", "-a", app_name],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                        check=True,
+                    )
+                except subprocess.CalledProcessError:
+                    error_output = e.stderr.strip() if e.stderr else str(e)
+                    raise RuntimeError(f"Failed to focus app '{app_name}': {error_output}")
             except subprocess.TimeoutExpired:
                 raise RuntimeError(f"Timeout: Failed to focus app '{app_name}'")
+            else:
+                self._app_running_cache[app_name.lower().strip()] = (time.monotonic(), True)
         else:
             # For Windows/Linux, opening is the same as focusing
             self.open_app(app_name)
@@ -187,6 +210,8 @@ class OSController:
         except subprocess.CalledProcessError as e:
             error_output = e.stderr.strip() if e.stderr else str(e)
             raise RuntimeError(f"Failed to close app '{app_name}': {error_output}")
+        else:
+            self._app_running_cache[app_name.lower().strip()] = (time.monotonic(), False)
 
     def open_url(self, url: str) -> None:
         if not url:

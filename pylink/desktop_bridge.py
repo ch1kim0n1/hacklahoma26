@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import signal
 import sys
+import time
+import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +17,17 @@ from core.runtime.orchestrator import DEFAULT_PERMISSION_PROFILE, PixelLinkRunti
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from bridge import load_plugins
+
+
+def _setup_logging() -> None:
+    logs_dir = Path(__file__).resolve().parent / "logs"
+    logs_dir.mkdir(exist_ok=True)
+    log_file = logs_dir / f"pixelink-bridge-{datetime.now().strftime('%Y%m%d')}.log"
+    logging.basicConfig(
+        filename=str(log_file),
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(message)s",
+    )
 
 
 def _read_json_line() -> dict[str, Any] | None:
@@ -54,6 +69,7 @@ def _build_error(
     message: str,
     code: str,
     request_id: str | None = None,
+    trace_id: str | None = None,
     error: Exception | None = None,
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -68,12 +84,16 @@ def _build_error(
     }
     if request_id is not None:
         payload["request_id"] = request_id
+    if trace_id is not None:
+        payload["trace_id"] = trace_id
     if extra:
         payload.update(extra)
     return payload
 
 
 def main() -> int:
+    _setup_logging()
+
     dry_run = _as_bool(os.getenv("PIXELINK_DRY_RUN"), default=False)
     speed = float(os.getenv("PIXELINK_SPEED", "1.0"))
     enable_kill_switch = _as_bool(os.getenv("PIXELINK_ENABLE_KILL_SWITCH"), default=False)
@@ -126,6 +146,8 @@ def main() -> int:
                 enable_stt=requested_voice_input,
             )
             voice_errors = voice_controller.init_errors
+            if voice_controller.stt_available:
+                voice_controller.prewarm_stt_async()
     except Exception as exc:
         voice_errors["voice"] = str(exc)
         voice_controller = None
@@ -211,24 +233,41 @@ def main() -> int:
                 continue
 
             request_id = str(payload.get("request_id", "")).strip() or None
+            trace_id = request_id or f"trace-{uuid.uuid4().hex[:12]}"
             action = payload.get("action")
 
             if action == "process_input":
                 text = str(payload.get("text", ""))
                 source = str(payload.get("source", "text"))
+                request_start = time.perf_counter()
                 try:
-                    result = runtime.handle_input(text, source=source)
+                    result = runtime.handle_input(text, source=source, trace_id=trace_id)
                     _speak_response(result)
                     result["voice"] = _voice_state()
                     if request_id is not None:
                         result["request_id"] = request_id
                     _write_json(result)
+                    logging.info(
+                        json.dumps(
+                            {
+                                "event": "bridge.process_input",
+                                "trace_id": trace_id,
+                                "source": source,
+                                "action": action,
+                                "status": result.get("status"),
+                                "elapsed_ms": round((time.perf_counter() - request_start) * 1000.0, 3),
+                                "metrics": result.get("metrics", {}),
+                            },
+                            sort_keys=True,
+                        )
+                    )
                 except Exception as exc:
                     _write_json(
                         _build_error(
                             message="Failed to process input.",
                             code="PROCESS_INPUT_FAILED",
                             request_id=request_id,
+                            trace_id=trace_id,
                             error=exc,
                             extra={**_runtime_state(runtime), "voice": _voice_state()},
                         )
@@ -242,18 +281,29 @@ def main() -> int:
                             message="Voice input is unavailable.",
                             code="VOICE_INPUT_UNAVAILABLE",
                             request_id=request_id,
+                            trace_id=trace_id,
                             extra={**_runtime_state(runtime), "voice": _voice_state()},
                         )
                     )
                     continue
 
                 prompt = str(payload.get("prompt", "")).strip()
+                request_start = time.perf_counter()
                 try:
                     if prompt and voice_output_enabled:
                         voice_controller.speak(prompt, blocking=False)
+                    phase = {"state": "listening"}
+
+                    def _status_callback(status: str) -> None:
+                        if status == "listening":
+                            phase["state"] = "listening"
+                        elif status == "processing":
+                            phase["state"] = "understanding"
+
                     transcript = voice_controller.listen(
                         allow_text_fallback=False,
-                        status_callback=lambda _status: None,
+                        status_callback=_status_callback,
+                        immediate_feedback=lambda state: phase.update({"state": state.lower()}),
                     ).strip()
                 except Exception as exc:
                     _write_json(
@@ -261,6 +311,7 @@ def main() -> int:
                             message="Voice input failed.",
                             code="VOICE_INPUT_FAILED",
                             request_id=request_id,
+                            trace_id=trace_id,
                             error=exc,
                             extra={**_runtime_state(runtime), "voice": _voice_state()},
                         )
@@ -275,6 +326,7 @@ def main() -> int:
                                 message="Voice input failed.",
                                 code="VOICE_INPUT_FAILED",
                                 request_id=request_id,
+                                trace_id=trace_id,
                                 extra={
                                     **_runtime_state(runtime),
                                     "voice": _voice_state(),
@@ -294,6 +346,7 @@ def main() -> int:
                             message="No speech detected. Please try again.",
                             code="VOICE_INPUT_EMPTY",
                             request_id=request_id,
+                            trace_id=trace_id,
                             extra={
                                 **_runtime_state(runtime),
                                 "voice": _voice_state(),
@@ -305,19 +358,34 @@ def main() -> int:
                     continue
 
                 try:
-                    result = runtime.handle_input(transcript, source="voice")
+                    result = runtime.handle_input(transcript, source="voice", trace_id=trace_id)
                     result["transcript"] = transcript
                     result["voice"] = _voice_state()
                     _speak_response(result)
+                    result["voice_stage"] = "executing"
                     if request_id is not None:
                         result["request_id"] = request_id
                     _write_json(result)
+                    logging.info(
+                        json.dumps(
+                            {
+                                "event": "bridge.capture_voice_input",
+                                "trace_id": trace_id,
+                                "source": "voice",
+                                "status": result.get("status"),
+                                "elapsed_ms": round((time.perf_counter() - request_start) * 1000.0, 3),
+                                "metrics": result.get("metrics", {}),
+                            },
+                            sort_keys=True,
+                        )
+                    )
                 except Exception as exc:
                     _write_json(
                         _build_error(
                             message="Voice command processing failed.",
                             code="VOICE_COMMAND_FAILED",
                             request_id=request_id,
+                            trace_id=trace_id,
                             error=exc,
                             extra={
                                 **_runtime_state(runtime),
@@ -359,6 +427,7 @@ def main() -> int:
                             message="Failed to update preferences.",
                             code="UPDATE_PREFERENCES_FAILED",
                             request_id=request_id,
+                            trace_id=trace_id,
                             error=exc,
                             extra={"voice": _voice_state()},
                         )
@@ -388,6 +457,7 @@ def main() -> int:
                     message=f"Unknown action: {action}",
                     code="UNKNOWN_ACTION",
                     request_id=request_id,
+                    trace_id=trace_id,
                 )
             )
     finally:

@@ -107,10 +107,12 @@ async function submitCommand(command) {
   }
 
   appendLog("info", "Command", trimmed);
+  appendLog("info", "Stage", "Understanding...");
   elements.commandInput.value = "";
 
   try {
     const result = await window.pixelink.sendInput(trimmed, "text");
+    appendLog("info", "Stage", "Executing...");
     logResult(result);
   } catch (error) {
     appendLog("error", "Error", String(error.message || error));
@@ -132,6 +134,19 @@ function logResult(result) {
   const message = result?.status === "error" ? formatStructuredError(result) : (result?.message || "");
   appendLog(level, title, message);
 
+  if (result?.metrics) {
+    const parseMs = Number(result.metrics.parse_ms || 0).toFixed(1);
+    const planMs = Number(result.metrics.plan_ms || 0).toFixed(1);
+    const executeMs = Number(result.metrics.execute_ms || 0).toFixed(1);
+    const totalMs = Number(result.metrics.total_ms || 0).toFixed(1);
+    const mode = result.metrics.nlu_mode || "rules";
+    appendLog(
+      "info",
+      "Timing",
+      `Understanding=${parseMs}ms, Planning=${planMs}ms, Executing=${executeMs}ms, Total=${totalMs}ms, NLU=${mode}`
+    );
+  }
+
   if (result?.transcript) {
     appendLog("info", "Heard", result.transcript);
   }
@@ -148,10 +163,11 @@ async function submitVoiceCommand() {
 
   state.voiceListening = true;
   updateVoiceButtonState();
-  appendLog("info", "Voice", "Listening for command...");
+  appendLog("info", "Voice", "Listening...");
 
   try {
     const result = await window.pixelink.captureVoiceInput();
+    appendLog("info", "Voice", "Understanding + Executing...");
     logResult(result);
   } catch (error) {
     appendLog("error", "Voice Error", String(error.message || error));

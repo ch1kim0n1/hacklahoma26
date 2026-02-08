@@ -10,6 +10,7 @@ import math
 import threading
 import wave
 import tempfile
+import time
 from typing import Optional, Callable
 
 from dotenv import load_dotenv
@@ -34,7 +35,7 @@ class SpeechToText:
     def __init__(
         self,
         model_size: Optional[str] = None,
-        silence_threshold: float = 1.0,
+        silence_threshold: float = 0.6,
         max_duration: float = 30.0,
         device: str = "auto",
         compute_type: str = "int8",
@@ -60,6 +61,8 @@ class SpeechToText:
         self._listen_lock = threading.Lock()
         self._pyaudio = None
         self.last_error: Optional[str] = None
+        self._prewarm_lock = threading.Lock()
+        self._prewarmed = False
 
         logging.info(
             "SpeechToText initialized with model=%s, device=%s",
@@ -162,8 +165,8 @@ class SpeechToText:
         voice_started = False
         startup_chunks = 0
         max_startup_wait = int(
-            10 * self.SAMPLE_RATE / self.CHUNK_SIZE
-        )  # 10 seconds max wait
+            2.5 * self.SAMPLE_RATE / self.CHUNK_SIZE
+        )  # 2.5 seconds max wait for initial voice activity
 
         try:
             for _ in range(max_chunks + max_startup_wait):
@@ -243,6 +246,23 @@ class SpeechToText:
         finally:
             # Clean up temp file
             os.unlink(temp_path)
+
+    def prewarm(self) -> None:
+        """Load Whisper model ahead of first command to reduce cold-start latency."""
+        if self._prewarmed:
+            return
+        with self._prewarm_lock:
+            if self._prewarmed:
+                return
+            start = time.perf_counter()
+            _ = self.model
+            self._prewarmed = True
+            logging.info("STT prewarm completed in %.2fms", (time.perf_counter() - start) * 1000.0)
+
+    def prewarm_async(self) -> None:
+        """Run prewarm in background."""
+        thread = threading.Thread(target=self.prewarm, daemon=True)
+        thread.start()
 
     def listen_continuous(
         self,

@@ -7,6 +7,7 @@ from core.context.filesystem_context import FileSystemContext
 
 @dataclass
 class SessionContext:
+    max_history: int = 500
     last_intent: str | None = None
     last_app: str | None = None
     last_action: str | None = None
@@ -18,11 +19,11 @@ class SessionContext:
 
     def record_intent(self, intent_name: str, raw_text: str) -> None:
         self.last_intent = intent_name
-        self.history.append({"intent": intent_name, "raw_text": raw_text})
+        self._append_history({"intent": intent_name, "raw_text": raw_text})
 
     def record_action(self, action_name: str, params: dict[str, Any]) -> None:
         self.last_action = action_name
-        self.history.append({"action": action_name, "params": params})
+        self._append_history({"action": action_name, "params": params})
 
     def set_last_app(self, app_name: str) -> None:
         self.last_app = app_name
@@ -59,3 +60,8 @@ class SessionContext:
             parts.append(f"\nFile system context:\n{fs_summary}")
         
         return "\n".join(parts) if parts else "No context available."
+
+    def _append_history(self, item: dict[str, Any]) -> None:
+        self.history.append(item)
+        if len(self.history) > self.max_history:
+            self.history = self.history[-self.max_history:]

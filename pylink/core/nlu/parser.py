@@ -25,6 +25,55 @@ MESSAGING_APP_PATTERNS = [
     r"texts?",
 ]
 
+_CLEANER_WORDS_PATTERN = re.compile(r"\b(can you|could you|please|the|a|an|for me)\b")
+_FILE_SEARCH_PATTERN = re.compile(r"\b(find file|search file|locate file|find document|search for file|search document)\b")
+_LOGIN_PATTERN = re.compile(r"\b(login|log in|sign in|signin|authenticate)\b")
+_LOGIN_TAIL_PATTERN = re.compile(r"(\w+)\s+(?:login|log in|sign in)")
+_YOUTUBE_SEARCH_PATTERN = re.compile(r"\b(search youtube for|find on youtube|look up on youtube)\b")
+_WEB_SEARCH_PATTERN = re.compile(
+    r"\b(search|browse|find|look up|google|search for|browse for|find on internet|search internet|search online|look online)\b"
+)
+_OPEN_SITE_PATTERN = re.compile(r"\b(open|visit|go to|launch|load)\b")
+_SITE_HINT_PATTERN = re.compile(r"\b(browser|website|web|youtube|google|github|reddit|linkedin|gmail)\b")
+_OPEN_FILE_PATTERN = re.compile(r"\b(open file|open document)\b")
+_REPLY_PATTERN = re.compile(r"\b(reply|respond|answer)\b")
+_MAIL_OR_MESSAGE_PATTERN = re.compile(r"\b(email|mail|message)\b")
+_OPEN_APP_PATTERN = re.compile(r"\b(open|launch|start|run|fire up|boot)\b")
+_FOCUS_APP_PATTERN = re.compile(r"\b(focus|switch to|go to|bring up|activate)\b")
+_CLOSE_APP_PATTERN = re.compile(r"\b(close app|quit app|exit app|close application|quit)\b")
+_NOTE_ACTION_PATTERN = re.compile(r"\b(create|add|make|write)\b")
+_NOTE_PATTERN = re.compile(r"\b(note|notes)\b")
+_TYPE_PATTERN = re.compile(r"\b(type|write|enter|input|dictate)\b")
+_DOUBLE_CLICK_PATTERN = re.compile(r"\b(double click|double tap)\b")
+_RIGHT_CLICK_PATTERN = re.compile(r"\b(right click|secondary click)\b")
+_CLICK_PATTERN = re.compile(r"\b(click|tap|press here)\b")
+_SCROLL_PATTERN = re.compile(r"\b(scroll up|scroll down|page up|page down)\b")
+_SCROLL_UP_PATTERN = re.compile(r"\b(scroll up|page up)\b")
+_DIGITS_PATTERN = re.compile(r"\b(\d+)\b")
+_NEW_TAB_PATTERN = re.compile(r"\b(new tab|open tab)\b")
+_CLOSE_TAB_PATTERN = re.compile(r"\b(close tab|remove tab)\b")
+_NEXT_TAB_PATTERN = re.compile(r"\b(next tab|tab right)\b")
+_PREV_TAB_PATTERN = re.compile(r"\b(previous tab|prev tab|tab left)\b")
+_REFRESH_PATTERN = re.compile(r"\b(refresh|reload page)\b")
+_BACK_PATTERN = re.compile(r"\b(go back|navigate back|back page)\b")
+_FORWARD_PATTERN = re.compile(r"\b(go forward|navigate forward|forward page)\b")
+_COPY_PATTERN = re.compile(r"\b(copy|copy this)\b")
+_PASTE_PATTERN = re.compile(r"\b(paste|insert clipboard)\b")
+_CUT_PATTERN = re.compile(r"\b(cut|cut this)\b")
+_UNDO_PATTERN = re.compile(r"\b(undo|go undo)\b")
+_REDO_PATTERN = re.compile(r"\b(redo|do again)\b")
+_SELECT_ALL_PATTERN = re.compile(r"\b(select all|highlight all)\b")
+_VOLUME_UP_PATTERN = re.compile(r"\b(volume up|increase volume|louder)\b")
+_VOLUME_DOWN_PATTERN = re.compile(r"\b(volume down|decrease volume|quieter)\b")
+_MUTE_PATTERN = re.compile(r"\b(mute|silence)\b")
+_PRESS_KEY_PATTERN = re.compile(r"\b(press|hit)\s+([a-z0-9_-]+)\b")
+_MINIMIZE_PATTERN = re.compile(r"\b(minimize window|minimize)\b")
+_MAXIMIZE_PATTERN = re.compile(r"\b(maximize window|maximize)\b")
+_WAIT_PATTERN = re.compile(r"\b(wait|pause)\b")
+_SECONDS_PATTERN = re.compile(r"(\d+(?:\.\d+)?)")
+_REMINDER_ACTION_PATTERN = re.compile(r"\b(create|add|make|set)\b")
+_REMINDER_PATTERN = re.compile(r"\b(reminder|reminders)\b")
+
 
 def _extract_after_keyword(original: str, lowered: str, keyword: str) -> str | None:
     index = lowered.find(keyword)
@@ -231,7 +280,7 @@ def _parse_send_text(original: str, lowered: str) -> Intent | None:
 
 def parse_intent(text: str, context=None) -> Intent:
     lowered = text.lower().strip()
-    cleaned = re.sub(r"\b(can you|could you|please|the|a|an|for me)\b", "", lowered).strip()
+    cleaned = _CLEANER_WORDS_PATTERN.sub("", lowered).strip()
 
     if lowered in {"confirm", "yes", "y", "ok", "okay", "sure", "proceed", "go ahead", "do it"}:
         return Intent(name="confirm", confidence=1.0, raw_text=text)
@@ -240,7 +289,7 @@ def parse_intent(text: str, context=None) -> Intent:
         return Intent(name="cancel", confidence=1.0, raw_text=text)
 
     # File search - check early before general search patterns
-    if re.search(r"\b(find file|search file|locate file|find document|search for file|search document)\b", cleaned):
+    if _FILE_SEARCH_PATTERN.search(cleaned):
         query = _extract_after_keywords(
             text, lowered,
             ["find file ", "search file ", "locate file ", "find document ", "search for file ", "search document "]
@@ -254,7 +303,7 @@ def parse_intent(text: str, context=None) -> Intent:
             )
 
     # Login intent - autofill passwords
-    if re.search(r"\b(login|log in|sign in|signin|authenticate)\b", cleaned):
+    if _LOGIN_PATTERN.search(cleaned):
         # Extract service/website name
         service = None
         
@@ -267,7 +316,7 @@ def parse_intent(text: str, context=None) -> Intent:
         
         if not service:
             # Try "<service> login"
-            match = re.search(r"(\w+)\s+(?:login|log in|sign in)", cleaned)
+            match = _LOGIN_TAIL_PATTERN.search(cleaned)
             if match:
                 service = match.group(1)
         
@@ -279,7 +328,7 @@ def parse_intent(text: str, context=None) -> Intent:
                 raw_text=text,
             )
 
-    if re.search(r"\b(search youtube for|find on youtube|look up on youtube)\b", cleaned):
+    if _YOUTUBE_SEARCH_PATTERN.search(cleaned):
         query = _extract_after_keywords(text, lowered, ["search youtube for ", "find on youtube ", "look up on youtube "])
         if query:
             return Intent(
@@ -290,7 +339,7 @@ def parse_intent(text: str, context=None) -> Intent:
             )
 
     # Enhanced web search patterns
-    if re.search(r"\b(search|browse|find|look up|google|search for|browse for|find on internet|search internet|search online|look online)\b", cleaned):
+    if _WEB_SEARCH_PATTERN.search(cleaned):
         # Extract query with more patterns
         query = _extract_after_keywords(
             text,
@@ -302,14 +351,12 @@ def parse_intent(text: str, context=None) -> Intent:
         if query and "youtube" not in query.lower():
             return Intent(name="search_web", entities={"query": query}, confidence=0.86, raw_text=text)
 
-    if re.search(r"\b(open|visit|go to|launch|load)\b", cleaned) and re.search(
-        r"\b(browser|website|web|youtube|google|github|reddit|linkedin|gmail)\b", cleaned
-    ):
+    if _OPEN_SITE_PATTERN.search(cleaned) and _SITE_HINT_PATTERN.search(cleaned):
         url = _extract_website_url(text, lowered)
         if url:
             return Intent(name="open_website", entities={"url": url}, confidence=0.92, raw_text=text)
 
-    if re.search(r"\b(open file|open document)\b", cleaned):
+    if _OPEN_FILE_PATTERN.search(cleaned):
         file_path = _extract_after_keywords(text, lowered, ["open file ", "open document "])
         if file_path:
             return Intent(name="open_file", entities={"path": file_path.strip()}, confidence=0.8, raw_text=text)
@@ -318,7 +365,7 @@ def parse_intent(text: str, context=None) -> Intent:
     if send_text_intent:
         return send_text_intent
 
-    if re.search(r"\b(reply|respond|answer)\b", cleaned) and re.search(r"\b(email|mail|message)\b", cleaned):
+    if _REPLY_PATTERN.search(cleaned) and _MAIL_OR_MESSAGE_PATTERN.search(cleaned):
         content = _extract_after_keywords(text, lowered, ["saying ", "that ", "with ", ":"])
         entities = {
             "target": "last_email" if "last" in lowered or "previous" in lowered else "email",
@@ -326,24 +373,24 @@ def parse_intent(text: str, context=None) -> Intent:
         }
         return Intent(name="reply_email", entities=entities, confidence=0.82, raw_text=text)
 
-    if re.search(r"\b(open|launch|start|run|fire up|boot)\b", cleaned):
+    if _OPEN_APP_PATTERN.search(cleaned) and not _NEW_TAB_PATTERN.search(cleaned):
         app = _extract_after_keywords(text, lowered, ["open ", "launch ", "start ", "run ", "fire up ", "boot "])
         if app:
             app = re.sub(r"\s+(app|application)$", "", app.strip(), flags=re.IGNORECASE)
             return Intent(name="open_app", entities={"app": app}, confidence=0.88, raw_text=text)
 
-    if re.search(r"\b(focus|switch to|go to|bring up|activate)\b", cleaned):
+    if _FOCUS_APP_PATTERN.search(cleaned):
         app = _extract_after_keywords(text, lowered, ["focus ", "switch to ", "go to ", "bring up ", "activate "])
         if app:
             app = re.sub(r"\s+(app|application)$", "", app.strip(), flags=re.IGNORECASE)
             return Intent(name="focus_app", entities={"app": app}, confidence=0.86, raw_text=text)
 
-    if re.search(r"\b(close app|quit app|exit app|close application|quit)\b", cleaned):
+    if _CLOSE_APP_PATTERN.search(cleaned):
         app = _extract_after_keywords(text, lowered, ["close app ", "quit app ", "exit app ", "close application ", "quit "])
         return Intent(name="close_app", entities={"app": (app or "").strip()}, confidence=0.84, raw_text=text)
 
     # Note creation - check before type_text to avoid conflicts
-    if re.search(r"\b(create|add|make|write)\b", cleaned) and re.search(r"\b(note|notes)\b", cleaned):
+    if _NOTE_ACTION_PATTERN.search(cleaned) and _NOTE_PATTERN.search(cleaned):
         # Extract note title
         title_match = re.search(r"(?:note|notes)\s+(?:called|named|titled)?\s*([^,]+?)(?=\s+(?:in|to|with|saying)|$)", cleaned)
         if title_match:
@@ -368,85 +415,85 @@ def parse_intent(text: str, context=None) -> Intent:
             raw_text=text,
         )
 
-    if re.search(r"\b(type|write|enter|input|dictate)\b", cleaned):
+    if _TYPE_PATTERN.search(cleaned):
         content = _extract_after_keywords(text, lowered, ["type ", "write ", "enter ", "input ", "dictate "])
         if content:
             content = re.sub(r"^:\s*", "", content)
             return Intent(name="type_text", entities={"content": content}, confidence=0.84, raw_text=text)
 
-    if re.search(r"\b(double click|double tap)\b", cleaned):
+    if _DOUBLE_CLICK_PATTERN.search(cleaned):
         return Intent(name="double_click", confidence=0.84, raw_text=text)
 
-    if re.search(r"\b(right click|secondary click)\b", cleaned):
+    if _RIGHT_CLICK_PATTERN.search(cleaned):
         return Intent(name="right_click", confidence=0.84, raw_text=text)
 
-    if re.search(r"\b(click|tap|press here)\b", cleaned):
+    if _CLICK_PATTERN.search(cleaned):
         target = _extract_after_keywords(text, lowered, ["click ", "tap ", "press here "]) or ""
         return Intent(name="click", entities={"target": target}, confidence=0.8, raw_text=text)
 
-    if re.search(r"\b(scroll up|scroll down|page up|page down)\b", cleaned):
-        direction = "up" if re.search(r"\b(scroll up|page up)\b", cleaned) else "down"
-        amount_match = re.search(r"\b(\d+)\b", cleaned)
+    if _SCROLL_PATTERN.search(cleaned):
+        direction = "up" if _SCROLL_UP_PATTERN.search(cleaned) else "down"
+        amount_match = _DIGITS_PATTERN.search(cleaned)
         amount = int(amount_match.group(1)) if amount_match else 450
         return Intent(name="scroll", entities={"direction": direction, "amount": amount}, confidence=0.9, raw_text=text)
 
-    if re.search(r"\b(new tab|open tab)\b", cleaned):
+    if _NEW_TAB_PATTERN.search(cleaned):
         return Intent(name="new_tab", confidence=0.9, raw_text=text)
 
-    if re.search(r"\b(close tab|remove tab)\b", cleaned):
+    if _CLOSE_TAB_PATTERN.search(cleaned):
         return Intent(name="close_tab", confidence=0.9, raw_text=text)
 
-    if re.search(r"\b(next tab|tab right)\b", cleaned):
+    if _NEXT_TAB_PATTERN.search(cleaned):
         return Intent(name="next_tab", confidence=0.88, raw_text=text)
 
-    if re.search(r"\b(previous tab|prev tab|tab left)\b", cleaned):
+    if _PREV_TAB_PATTERN.search(cleaned):
         return Intent(name="previous_tab", confidence=0.88, raw_text=text)
 
-    if re.search(r"\b(refresh|reload page)\b", cleaned):
+    if _REFRESH_PATTERN.search(cleaned):
         return Intent(name="refresh_page", confidence=0.9, raw_text=text)
 
-    if re.search(r"\b(go back|navigate back|back page)\b", cleaned):
+    if _BACK_PATTERN.search(cleaned):
         return Intent(name="navigate_back", confidence=0.86, raw_text=text)
 
-    if re.search(r"\b(go forward|navigate forward|forward page)\b", cleaned):
+    if _FORWARD_PATTERN.search(cleaned):
         return Intent(name="navigate_forward", confidence=0.86, raw_text=text)
 
-    if re.search(r"\b(copy|copy this)\b", cleaned):
+    if _COPY_PATTERN.search(cleaned):
         return Intent(name="copy", confidence=0.9, raw_text=text)
-    if re.search(r"\b(paste|insert clipboard)\b", cleaned):
+    if _PASTE_PATTERN.search(cleaned):
         return Intent(name="paste", confidence=0.9, raw_text=text)
-    if re.search(r"\b(cut|cut this)\b", cleaned):
+    if _CUT_PATTERN.search(cleaned):
         return Intent(name="cut", confidence=0.9, raw_text=text)
-    if re.search(r"\b(undo|go undo)\b", cleaned):
+    if _UNDO_PATTERN.search(cleaned):
         return Intent(name="undo", confidence=0.9, raw_text=text)
-    if re.search(r"\b(redo|do again)\b", cleaned):
+    if _REDO_PATTERN.search(cleaned):
         return Intent(name="redo", confidence=0.9, raw_text=text)
-    if re.search(r"\b(select all|highlight all)\b", cleaned):
+    if _SELECT_ALL_PATTERN.search(cleaned):
         return Intent(name="select_all", confidence=0.9, raw_text=text)
 
-    if re.search(r"\b(volume up|increase volume|louder)\b", cleaned):
+    if _VOLUME_UP_PATTERN.search(cleaned):
         return Intent(name="volume_up", confidence=0.84, raw_text=text)
-    if re.search(r"\b(volume down|decrease volume|quieter)\b", cleaned):
+    if _VOLUME_DOWN_PATTERN.search(cleaned):
         return Intent(name="volume_down", confidence=0.84, raw_text=text)
-    if re.search(r"\b(mute|silence)\b", cleaned):
+    if _MUTE_PATTERN.search(cleaned):
         return Intent(name="mute", confidence=0.84, raw_text=text)
 
-    press_match = re.search(r"\b(press|hit)\s+([a-z0-9_-]+)\b", cleaned)
+    press_match = _PRESS_KEY_PATTERN.search(cleaned)
     if press_match:
         return Intent(name="press_key", entities={"key": press_match.group(2)}, confidence=0.82, raw_text=text)
 
-    if re.search(r"\b(minimize window|minimize)\b", cleaned):
+    if _MINIMIZE_PATTERN.search(cleaned):
         return Intent(name="minimize_window", confidence=0.8, raw_text=text)
-    if re.search(r"\b(maximize window|maximize)\b", cleaned):
+    if _MAXIMIZE_PATTERN.search(cleaned):
         return Intent(name="maximize_window", confidence=0.8, raw_text=text)
 
-    if re.search(r"\b(wait|pause)\b", cleaned):
-        seconds_match = re.search(r"(\d+(?:\.\d+)?)", cleaned)
+    if _WAIT_PATTERN.search(cleaned):
+        seconds_match = _SECONDS_PATTERN.search(cleaned)
         seconds = float(seconds_match.group(1)) if seconds_match else 1.0
         return Intent(name="wait", entities={"seconds": seconds}, confidence=0.8, raw_text=text)
 
     # Reminder creation
-    if re.search(r"\b(create|add|make|set)\b", cleaned) and re.search(r"\b(reminder|reminders)\b", cleaned):
+    if _REMINDER_ACTION_PATTERN.search(cleaned) and _REMINDER_PATTERN.search(cleaned):
         # Extract reminder name/title
         name_match = re.search(r"(?:reminder|reminders)\s+(?:to\s+|for\s+|called\s+|named\s+)?([^,]+)", cleaned)
         if name_match:

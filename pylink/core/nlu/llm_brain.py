@@ -1,15 +1,16 @@
-"""
-LLM Brain for PixelLink Voice Agent.
-Uses Google Gemini to understand natural language commands.
-"""
+"""LLM fallback parser for PixelLink intent extraction."""
+
+from __future__ import annotations
 
 import json
-import os
 import logging
+import os
+import threading
+import time
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from typing import Optional
 
-from google import genai
-from google.genai import types
 from dotenv import load_dotenv
 
 from core.nlu.intents import Intent
@@ -18,173 +19,174 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# System prompt that tells Gemini how to parse commands
-SYSTEM_PROMPT = """You are the brain of a voice-controlled computer assistant called PixelLink.
-Your job is to understand what the user wants to do and return a structured JSON response.
-
-You must respond with ONLY valid JSON, no other text. The JSON must have this structure:
+SYSTEM_PROMPT = """You are the intent parser for PixelLink.
+Return ONLY JSON in this format:
 {
-    "intent": "<intent_name>",
-    "entities": {<key-value pairs of extracted info>},
-    "confidence": <0.0 to 1.0>
+  "intent": "<intent_name>",
+  "entities": {"key": "value"},
+  "confidence": 0.0
 }
 
-Available intents and their entities:
+Supported intents:
+open_app, focus_app, close_app, open_website, search_web, search_youtube,
+open_file, type_text, click, right_click, double_click, scroll, press_key,
+new_tab, close_tab, next_tab, previous_tab, refresh_page, navigate_back,
+navigate_forward, copy, paste, cut, undo, redo, select_all,
+volume_up, volume_down, mute, minimize_window, maximize_window,
+reply_email, send_text, create_note, create_reminder, login,
+search_file, confirm, cancel, unknown.
 
-1. "open_app" - User wants to open an application
-   entities: {"app": "<app name>"}
-   Examples: "open Safari", "launch Notes", "fire up the browser", "I need Chrome"
-
-2. "focus_app" - User wants to switch to an already open application
-   entities: {"app": "<app name>"}
-   Examples: "switch to Safari", "go to Notes", "focus on Terminal"
-
-3. "type_text" - User wants to type something
-   entities: {"content": "<text to type>"}
-   Examples: "type hello world", "write Dear John", "enter my email"
-
-4. "click" - User wants to click something
-   entities: {"target": "<what to click>"}
-   Examples: "click the submit button", "click on save"
-
-5. "search_web" - User wants to search the web
-   entities: {"query": "<search query>"}
-   Examples: "search for Python tutorials", "google how to cook pasta", "look up weather"
-
-6. "close_app" - User wants to close an application
-   entities: {"app": "<app name>"}
-   Examples: "close Safari", "quit Notes", "exit Chrome"
-
-7. "confirm" - User is confirming an action
-   entities: {}
-   Examples: "yes", "confirm", "do it", "go ahead", "sure"
-
-8. "cancel" - User is cancelling an action
-   entities: {}
-   Examples: "no", "cancel", "stop", "nevermind", "abort"
-
-9. "exit" - User wants to stop the voice assistant
-   entities: {}
-   Examples: "goodbye", "bye", "exit", "quit assistant", "I'm done", "that's all"
-
-10. "unknown" - You cannot understand what the user wants
-    entities: {"text": "<original text>"}
-
-Important rules:
-- Extract the ACTUAL app/content name, not the literal words. "fire up the browser" means Safari or Chrome, not "the browser"
-- For macOS, common apps: Safari, Chrome, Notes, Terminal, Finder, Messages, Mail, Calendar, Music, Photos
-- Be flexible with phrasing - "open up", "launch", "start", "fire up", "get me" all mean open_app
-- If the user says goodbye/bye/exit in any form, return "exit" intent
-- confidence should be high (0.9+) if you're sure, lower if uncertain
-- Always return valid JSON, nothing else
+Rules:
+- Keep entities minimal and precise.
+- If unclear, return unknown with low confidence.
+- Never output markdown.
 """
 
 
+class _LRUTTLCache:
+    def __init__(self, max_entries: int = 1000, ttl_seconds: int = 900) -> None:
+        self.max_entries = max_entries
+        self.ttl_seconds = ttl_seconds
+        self._data: OrderedDict[str, tuple[float, Intent]] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def get(self, key: str) -> Intent | None:
+        now = time.monotonic()
+        with self._lock:
+            item = self._data.get(key)
+            if not item:
+                return None
+            expires_at, intent = item
+            if expires_at <= now:
+                self._data.pop(key, None)
+                return None
+            self._data.move_to_end(key)
+            return Intent(
+                name=intent.name,
+                entities=dict(intent.entities),
+                confidence=float(intent.confidence),
+                raw_text=intent.raw_text,
+            )
+
+    def set(self, key: str, value: Intent) -> None:
+        now = time.monotonic()
+        stored = Intent(
+            name=value.name,
+            entities=dict(value.entities),
+            confidence=float(value.confidence),
+            raw_text=value.raw_text,
+        )
+        with self._lock:
+            self._data[key] = (now + self.ttl_seconds, stored)
+            self._data.move_to_end(key)
+            while len(self._data) > self.max_entries:
+                self._data.popitem(last=False)
+
+
 class GeminiBrain:
-    """LLM-based natural language understanding using Google Gemini."""
+    """LLM-based natural language understanding using Gemini SDK."""
 
     def __init__(self, api_key: Optional[str] = None):
-        """Initialize the Gemini brain.
-
-        Args:
-            api_key: Gemini API key. If not provided, reads from GEMINI env var.
-        """
-        self.api_key = api_key or os.getenv("GEMINI")
+        self.api_key = api_key or os.getenv("GEMINI") or os.getenv("GOOGLE_API_KEY")
         if not self.api_key:
-            raise ValueError("Gemini API key not found. Set GEMINI in .env file.")
+            raise ValueError("Gemini API key not found. Set GEMINI or GOOGLE_API_KEY.")
 
-        self.client = genai.Client(api_key=self.api_key)
-        # Use gemini-2.0-flash - fast and good for intent parsing
-        # Fall back to gemini-2.0-flash-lite if needed
-        self.model_id = "gemini-2.0-flash"
-        logger.info(f"Gemini brain initialized with model: {self.model_id}")
+        try:
+            import google.generativeai as genai
+        except Exception as exc:  # pragma: no cover - import availability depends on env
+            raise RuntimeError(
+                "google-generativeai is unavailable. Install dependency 'google-generativeai'."
+            ) from exc
+
+        self._genai = genai
+        self._genai.configure(api_key=self.api_key)
+        self.model_id = os.getenv("PIXELINK_GEMINI_MODEL", "gemini-1.5-flash")
+        self._model = genai.GenerativeModel(
+            model_name=self.model_id,
+            system_instruction=SYSTEM_PROMPT,
+        )
+        logger.info("Gemini brain initialized with model=%s", self.model_id)
 
     def parse(self, text: str, context: Optional[dict] = None) -> Intent:
-        """Parse user input and return an Intent.
-
-        Args:
-            text: The user's spoken/typed input.
-            context: Optional context about previous actions.
-
-        Returns:
-            Intent object with parsed intent and entities.
-        """
         if not text or not text.strip():
             return Intent(name="unknown", entities={"text": ""}, confidence=0.0, raw_text="")
 
+        prompt = f'User input: "{text}"\nReturn JSON only.'
+        if context and context.get("last_intent"):
+            prompt = f"Previous intent: {context['last_intent']}\n{prompt}"
+
         try:
-            # Build the prompt
-            prompt = f"User said: \"{text}\"\n\nReturn the JSON response:"
-
-            # Add context if available
-            if context and context.get("last_intent"):
-                prompt = f"Previous intent: {context['last_intent']}\n\n{prompt}"
-
-            # Call Gemini
-            response = self.client.models.generate_content(
-                model=self.model_id,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT,
+            response = self._model.generate_content(
+                prompt,
+                generation_config=self._genai.types.GenerationConfig(
                     temperature=0.1,
                     max_output_tokens=256,
                 ),
             )
-            response_text = response.text.strip()
-
-            # Clean up response - remove markdown code blocks if present
+            response_text = (response.text or "").strip()
             if response_text.startswith("```"):
-                lines = response_text.split("\n")
-                # Remove first and last lines (```json and ```)
-                response_text = "\n".join(lines[1:-1])
+                lines = response_text.splitlines()
+                if len(lines) >= 3:
+                    response_text = "\n".join(lines[1:-1]).strip()
 
-            # Parse JSON
             data = json.loads(response_text)
-
-            intent_name = data.get("intent", "unknown")
+            intent_name = str(data.get("intent", "unknown"))
             entities = data.get("entities", {})
             confidence = float(data.get("confidence", 0.5))
-
-            logger.debug(f"Parsed '{text}' -> intent={intent_name}, entities={entities}")
-
-            return Intent(
-                name=intent_name,
-                entities=entities,
-                confidence=confidence,
-                raw_text=text,
-            )
-
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse Gemini response as JSON: {e}")
-            return Intent(name="unknown", entities={"text": text}, confidence=0.0, raw_text=text)
-        except Exception as e:
-            logger.error(f"Gemini API error: {e}")
+            if not isinstance(entities, dict):
+                entities = {}
+            return Intent(name=intent_name, entities=entities, confidence=confidence, raw_text=text)
+        except Exception as exc:
+            logger.info("Gemini parse failed: %s", exc)
             return Intent(name="unknown", entities={"text": text}, confidence=0.0, raw_text=text)
 
 
-# Global instance for easy access
-_brain: Optional[GeminiBrain] = None
+_executor = ThreadPoolExecutor(max_workers=2)
+_cache = _LRUTTLCache(max_entries=1000, ttl_seconds=900)
+_brain: GeminiBrain | None = None
+_brain_lock = threading.Lock()
 
 
 def get_brain() -> GeminiBrain:
-    """Get or create the global Gemini brain instance."""
     global _brain
-    if _brain is None:
-        _brain = GeminiBrain()
+    with _brain_lock:
+        if _brain is None:
+            _brain = GeminiBrain()
     return _brain
 
 
-def parse_with_llm(text: str, context: Optional[dict] = None) -> Intent:
-    """Parse user input using the Gemini LLM brain.
+def parse_with_llm(
+    text: str,
+    context: Optional[dict] = None,
+    *,
+    timeout_ms: int = 450,
+) -> Intent:
+    """Parse user input using LLM with strict timeout and LRU+TTL caching.
 
-    This is the main function to use for LLM-based parsing.
-
-    Args:
-        text: The user's spoken/typed input.
-        context: Optional context dictionary.
-
-    Returns:
-        Intent object with parsed intent and entities.
+    Returns unknown intent on timeout/failure (fail-closed behavior).
     """
-    brain = get_brain()
-    return brain.parse(text, context)
+    normalized = " ".join((text or "").strip().split()).lower()
+    cache_key = f"{normalized}|{(context or {}).get('last_intent', '')}"
+    cached = _cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    try:
+        brain = get_brain()
+    except Exception as exc:
+        logger.info("LLM unavailable: %s", exc)
+        return Intent(name="unknown", entities={"text": text}, confidence=0.0, raw_text=text)
+
+    future = _executor.submit(brain.parse, text, context)
+    try:
+        result = future.result(timeout=max(0.001, timeout_ms / 1000.0))
+    except FutureTimeoutError:
+        future.cancel()
+        logger.info("LLM parse timed out after %sms", timeout_ms)
+        return Intent(name="unknown", entities={"text": text}, confidence=0.0, raw_text=text)
+    except Exception as exc:
+        logger.info("LLM parse error: %s", exc)
+        return Intent(name="unknown", entities={"text": text}, confidence=0.0, raw_text=text)
+
+    _cache.set(cache_key, result)
+    return result

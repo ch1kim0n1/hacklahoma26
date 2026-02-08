@@ -6,16 +6,16 @@ import os
 import platform
 import subprocess
 import sys
+import uuid
 from datetime import datetime
-from typing import Optional
 from pathlib import Path
+from typing import Any
 
 from core.input.text_input import read_text_input
 from core.runtime.orchestrator import DEFAULT_PERMISSION_PROFILE, PixelLinkRuntime
 
-# Add parent directory to path to import bridge
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.append(str(ROOT))
+sys.path.insert(0, str(ROOT))
 from bridge import load_plugins
 
 
@@ -30,131 +30,22 @@ def _setup_logging() -> None:
 
 
 def _parse_args() -> argparse.Namespace:
-    """Parse command line arguments."""
-    parser = argparse.ArgumentParser(
-        description="PixelLink - Intent-driven accessibility operating layer"
-    )
-    parser.add_argument(
-        "--voice",
-        action="store_true",
-        help="Enable voice mode (speech input/output using ElevenLabs)",
-    )
-    parser.add_argument(
-        "--voice-only",
-        action="store_true",
-        help="Use voice-only mode (no text fallback)",
-    )
-    parser.add_argument(
-        "--tts-only",
-        action="store_true",
-        help="Enable text-to-speech output only (type input, voice output)",
-    )
+    parser = argparse.ArgumentParser(description="PixelLink")
+    parser.add_argument("--cli", "-c", action="store_true", help="Run CLI mode")
+    parser.add_argument("--voice", action="store_true", help="Enable voice input/output in CLI mode")
+    parser.add_argument("--voice-only", action="store_true", help="Voice input only (no typed input fallback)")
+    parser.add_argument("--tts-only", action="store_true", help="Typed input with voice output")
+    parser.add_argument("--dry-run", action="store_true", help="Execute without OS automation")
     return parser.parse_args()
 
 
-def _output(message: str, voice_controller=None) -> None:
-    """Output message via print and optionally voice."""
-    print(message)
-    if voice_controller:
-        # Remove emoji/symbols for cleaner speech
-        clean_message = message.replace("✓", "").replace("✗", "").replace("⚠", "").strip()
-        if clean_message:
-            voice_controller.speak(clean_message, blocking=True)
-
-
-def main() -> None:
-    args = _parse_args()
-def launch_electron_ui() -> None:
-    """Launch the Electron UI"""
-    electron_dir = ROOT / "electron"
-    
-    # Check if electron is installed
-    package_json = electron_dir / "package.json"
-    node_modules = electron_dir / "node_modules"
-    
-    if not package_json.exists():
-        print(f"❌ Error: Electron UI not found at {electron_dir}")
-        print("Please ensure the electron directory exists.")
-        sys.exit(1)
-    
-    # Install dependencies if needed
-    if not node_modules.exists():
-        print("📦 Installing Electron dependencies...")
-        try:
-            subprocess.run(
-                ["npm", "install"],
-                cwd=electron_dir,
-                check=True,
-                capture_output=True
-            )
-            print("✓ Dependencies installed")
-        except subprocess.CalledProcessError as e:
-            print(f"❌ Failed to install dependencies: {e}")
-            print("Please run 'npm install' in the electron directory manually.")
-            sys.exit(1)
-        except FileNotFoundError:
-            print("❌ npm not found. Please install Node.js and npm first.")
-            print("Download from: https://nodejs.org/")
-            sys.exit(1)
-    
-    # Launch Electron
-    print("🚀 Launching PixelLink Electron UI...")
-    try:
-        subprocess.run(
-            ["npm", "start"],
-            cwd=electron_dir,
-            check=False  # Don't raise exception on exit
-        )
-    except KeyboardInterrupt:
-        print("\n✓ Electron UI closed")
-    except Exception as e:
-        print(f"❌ Error launching Electron UI: {e}")
-        sys.exit(1)
-
-
-def run_cli_mode() -> None:
-    """Run the original CLI mode"""
-    _setup_logging()
-
-    # Initialize voice controller if voice mode enabled
-    voice_controller = None
-    if args.voice or args.voice_only or args.tts_only:
-        try:
-            from core.voice import VoiceController
-            voice_controller = VoiceController(
-                enable_tts=True,
-                enable_stt=not args.tts_only,
-            )
-            logging.info("Voice controller initialized")
-        except Exception as e:
-            print(f"Failed to initialize voice: {e}")
-            if args.voice_only:
-                print("Voice-only mode requested but voice init failed. Exiting.")
-                return
-            print("Falling back to text mode.")
-            voice_controller = None
-
-    # OS Detection and Warning
-    system = platform.system()
-    print(f"PixelLink MVP - Running on {system}")
-    if system == "Darwin":
-        print("✓ macOS detected (recommended)")
-        print("⚠ Note: Ensure accessibility permissions are enabled for Terminal/Python")
-        print("  (System Preferences → Security & Privacy → Accessibility)")
-    elif system == "Windows":
-        print("⚠ Windows support is experimental and not fully tested")
-    elif system == "Linux":
-        print("⚠ Linux support is experimental and not fully tested")
-    else:
-        print(f"⚠ WARNING: Unsupported OS '{system}'. Functionality may be limited.")
-
+def _build_tool_map() -> dict[str, Any]:
     calendar_credentials = os.getenv("PIXELINK_CALENDAR_CREDENTIALS_PATH")
     calendar_token = os.getenv("PIXELINK_CALENDAR_TOKEN_PATH")
     gmail_credentials = os.getenv("PIXELINK_GMAIL_CREDENTIALS_PATH")
     gmail_token = os.getenv("PIXELINK_GMAIL_TOKEN_PATH")
 
-    # Load MCP plugins
-    user_config = {
+    user_config: dict[str, dict[str, Any]] = {
         "reminders-mcp": {},
         "notes-mcp": {},
         "calendar-mcp": {
@@ -166,147 +57,144 @@ def run_cli_mode() -> None:
             **({"token_path": gmail_token} if gmail_token else {}),
         },
     }
+
     try:
         mcp_tools = load_plugins(ROOT / "plugins", user_config)
-        tool_map = {tool["name"]: tool["fn"] for tool in mcp_tools}
-        print(f"✓ Loaded {len(mcp_tools)} MCP tools: {', '.join(tool_map.keys())}")
-    except Exception as e:
-        print(f"⚠ Warning: Could not load MCP plugins: {e}")
-        tool_map = {}
+        return {tool["name"]: tool["fn"] for tool in mcp_tools}
+    except Exception as exc:
+        print(f"⚠ Warning: Could not load MCP plugins: {exc}")
+        return {}
+
+
+def launch_electron_ui() -> None:
+    electron_dir = ROOT / "electron"
+    package_json = electron_dir / "package.json"
+    node_modules = electron_dir / "node_modules"
+
+    if not package_json.exists():
+        print(f"❌ Error: Electron UI not found at {electron_dir}")
+        raise SystemExit(1)
+
+    if not node_modules.exists():
+        print("Installing Electron dependencies...")
+        try:
+            subprocess.run(["npm", "install"], cwd=electron_dir, check=True)
+        except Exception as exc:
+            print(f"❌ Failed to install dependencies: {exc}")
+            raise SystemExit(1)
+
+    print("Launching PixelLink Electron UI...")
+    try:
+        subprocess.run(["npm", "start"], cwd=electron_dir, check=False)
+    except KeyboardInterrupt:
+        print("Electron UI closed")
+
+
+def run_cli_mode(args: argparse.Namespace) -> None:
+    _setup_logging()
+
+    system = platform.system()
+    print(f"PixelLink - Running on {system}")
+    if system == "Darwin":
+        print("macOS detected")
+    elif system in {"Windows", "Linux"}:
+        print(f"{system} support is experimental")
+
+    tool_map = _build_tool_map()
+    if tool_map:
+        print(f"Loaded {len(tool_map)} MCP tools: {', '.join(tool_map.keys())}")
 
     runtime = PixelLinkRuntime(
-        dry_run=False,
+        dry_run=args.dry_run,
         speed=1.0,
         permission_profile=DEFAULT_PERMISSION_PROFILE,
         enable_kill_switch=True,
+        verbose=True,
         mcp_tools=tool_map,
     )
 
-    # Startup message
+    voice_controller = None
+    if args.voice or args.voice_only or args.tts_only:
+        try:
+            from core.voice import VoiceController
+
+            voice_controller = VoiceController(
+                enable_tts=True,
+                enable_stt=not args.tts_only,
+            )
+            if voice_controller.stt_available:
+                voice_controller.prewarm_stt_async()
+        except Exception as exc:
+            print(f"Voice initialization failed: {exc}")
+            if args.voice_only:
+                runtime.close()
+                return
+
     mode_desc = "voice" if (args.voice or args.voice_only) else "text"
     if args.tts_only:
         mode_desc = "text input with voice output"
-    startup_msg = f"\nPixelLink started in {mode_desc} mode. Say 'exit' to quit. Press ESC for kill switch."
-    print(startup_msg)
-
-    if voice_controller:
-        voice_controller.speak("PixelLink is ready. How can I help you?", blocking=True)
-
-    while True:
-        # Get input (voice or text)
-        if voice_controller and not args.tts_only:
-            from core.voice.voice_controller import read_voice_input
-            input_data = read_voice_input(voice_controller)
-        else:
-            input_data = read_text_input()
-
-        raw_text = input_data["raw_text"]
-
-        if not raw_text:
-            continue
-        if raw_text.lower() in {"exit", "quit", "goodbye", "bye"}:
-            _output("Goodbye!", voice_controller)
-            break
-
-        intent = parse_intent(raw_text, session)
-        session.record_intent(intent.name, raw_text)
-
-        if session.pending_steps:
-            if intent.name == "confirm":
-                result = executor.execute_steps(session.pending_steps, guard)
-                session.clear_pending()
-                if not result.completed:
-                    _output("Execution halted.", voice_controller)
-                continue
-            if intent.name == "cancel":
-                session.clear_pending()
-                _output("Pending actions canceled.", voice_controller)
-                continue
-
-        if intent.name == "unknown":
-            _output("Sorry, I didn't understand that.", voice_controller)
-            _output("Try: 'open Notes', 'type hello', or 'reply email saying I'll send it tomorrow'", voice_controller)
-            continue
-
-        steps = planner.plan(intent, session, guard)
-        print("Planned steps:")
-        for index, step in enumerate(steps, start=1):
-            print(f"  {index}. {step.action} - {step.description}")
-
-        safety = guard.validate_plan(steps)
-        if not safety.allowed:
-            _output(safety.reason, voice_controller)
-            continue
-
-        logging.info("Intent: %s | Steps: %s", intent.name, [s.action for s in steps])
-        result = executor.execute_steps(steps, guard)
-
-        # Track last app for context
-        for step in steps:
-            if step.action in {"open_app", "focus_app"}:
-                session.set_last_app(step.params.get("app", ""))
-                break
-
-        if result.pending_steps:
-            session.set_pending(result.pending_steps)
-            _output("Awaiting confirmation to proceed. Say 'confirm' or 'cancel'.", voice_controller)
-        elif result.completed:
-            _output("Task completed successfully.", voice_controller)
-        else:
-            _output("Task did not complete.", voice_controller)
-
-    kill_switch.stop()
-    if voice_controller:
-        voice_controller.cleanup()
-    print("\nPixelLink started. Type 'exit' to quit. Press ESC for kill switch.")
-    print("\nℹ️  New features:")
-    print("  - Enhanced web search (try: 'browse for python tutorials')")
-    print("  - Browsing history tracking")
-    print("  - File system context (indexing files in background...)")
-    print("  - Smart app opening (focuses if already running)")
-    print("  - Autofill passwords (try: 'login to github')")
-    print("  - Type 'context' to see current context summary")
+    print(f"\nPixelLink started in {mode_desc} mode. Type/say 'exit' to quit.")
 
     try:
         while True:
-            input_data = read_text_input()
-            raw_text = input_data["raw_text"]
+            if voice_controller and not args.tts_only:
+                from core.voice.voice_controller import read_voice_input
+
+                input_data = read_voice_input(voice_controller)
+            else:
+                input_data = read_text_input()
+
+            raw_text = input_data.get("raw_text", "").strip()
             if not raw_text:
                 continue
-            if raw_text.lower() in {"exit", "quit"}:
+            if raw_text.lower() in {"exit", "quit", "goodbye", "bye"}:
+                print("Goodbye!")
                 break
-            
-            # Special command to show context
-            if raw_text.lower() == "context":
-                context_summary = runtime.session.get_context_summary()
-                print("\n" + "="*60)
-                print("Current Context:")
-                print("="*60)
-                print(context_summary)
-                print("="*60 + "\n")
-                continue
 
-            result = runtime.handle_input(raw_text, source=input_data.get("source", "text"))
+            trace_id = f"cli-{uuid.uuid4().hex[:12]}"
+            result = runtime.handle_input(
+                raw_text,
+                source=input_data.get("source", "text"),
+                trace_id=trace_id,
+            )
+
             if result.get("steps"):
                 print("Planned steps:")
                 for index, step in enumerate(result["steps"], start=1):
                     print(f"  {index}. {step['action']} - {step['description']}")
+
             print(result.get("message", ""))
+
+            metrics = result.get("metrics", {})
+            if metrics:
+                print(
+                    "Timing: "
+                    f"parse={metrics.get('parse_ms', 0)}ms "
+                    f"plan={metrics.get('plan_ms', 0)}ms "
+                    f"execute={metrics.get('execute_ms', 0)}ms "
+                    f"total={metrics.get('total_ms', 0)}ms "
+                    f"mode={metrics.get('nlu_mode', 'rules')}"
+                )
+
             suggestions = result.get("suggestions", [])
             if suggestions:
                 print("Try:")
                 for suggestion in suggestions:
                     print(f"  - {suggestion}")
-            logging.info("Runtime result: %s", result)
+
+            if voice_controller and result.get("message"):
+                voice_controller.speak(str(result["message"]), blocking=False)
+
     finally:
         runtime.close()
+        if voice_controller:
+            voice_controller.cleanup()
 
 
 def main() -> None:
-    """Main entry point - launches Electron UI by default, CLI with --cli flag"""
-    # Check for CLI mode flag
-    if "--cli" in sys.argv or "-c" in sys.argv:
-        run_cli_mode()
+    args = _parse_args()
+    if args.cli:
+        run_cli_mode(args)
     else:
         launch_electron_ui()
 
