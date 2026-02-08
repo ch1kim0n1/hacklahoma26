@@ -18,6 +18,26 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+# Errors that are worth retrying (transient browser/CDP failures)
+_RETRYABLE_PATTERNS = [
+    "Expected at least one handler",
+    "BrowserStateRequestEvent",
+    "CDP",
+    "Connection refused",
+    "Connection closed",
+    "Timeout",
+    "timeout",
+    "Target closed",
+    "Session closed",
+    "net::ERR_",
+]
+
+
+def _is_retryable_error(error: Exception) -> bool:
+    """Check if an error is transient and worth retrying."""
+    msg = str(error)
+    return any(pattern in msg for pattern in _RETRYABLE_PATTERNS)
+
 
 class BrowserAgent:
     """AI-powered browser automation agent using browser-use.
@@ -115,8 +135,30 @@ class BrowserAgent:
             logger.error("Failed to initialize BrowserAgent: %s", e)
             raise
 
+    async def _try_recover_browser(self) -> None:
+        """Attempt to recover browser state after a transient failure."""
+        try:
+            # Try lightweight reset: just mark as needing re-init
+            if self._browser:
+                try:
+                    await self._browser.close()
+                except Exception:
+                    pass
+            self._browser = None
+            self._initialized = False
+            # Re-initialize fresh
+            await self._ensure_initialized()
+            logger.info("BrowserAgent: browser recovered after failure")
+        except Exception as e:
+            logger.warning("BrowserAgent: browser recovery failed: %s", e)
+            self._browser = None
+            self._initialized = False
+
     async def run_task(self, task: str, max_steps: int = 25) -> dict[str, Any]:
-        """Execute a browser automation task.
+        """Execute a browser automation task with retry logic.
+
+        Retries up to 3 times with exponential backoff (1s, 2s, 4s) for
+        transient errors like DOM watchdog crashes and CDP connection issues.
 
         Args:
             task: Natural language description of what to do in the browser.
@@ -125,46 +167,63 @@ class BrowserAgent:
         Returns:
             Dictionary with task result including success status and message.
         """
-        await self._ensure_initialized()
+        max_retries = 3
+        backoff_seconds = [1, 2, 4]
+        last_error: Optional[Exception] = None
 
-        self._emit_status(f"Starting browser task: {task[:50]}...")
+        for attempt in range(1, max_retries + 1):
+            await self._ensure_initialized()
+            self._emit_status(f"Starting browser task (attempt {attempt}/{max_retries}): {task[:50]}...")
 
-        try:
-            from browser_use import Agent
+            try:
+                from browser_use import Agent
 
-            # Create agent for this task
-            agent = Agent(
-                task=task,
-                llm=self._llm,
-                browser=self._browser,
-            )
+                agent = Agent(
+                    task=task,
+                    llm=self._llm,
+                    browser=self._browser,
+                )
 
-            # Run the task
-            history = await agent.run(max_steps=max_steps)
+                history = await agent.run(max_steps=max_steps)
 
-            self._emit_status("Browser task completed")
+                self._emit_status("Browser task completed")
 
-            # Extract result from history
-            result_text = "Task executed successfully"
-            if history:
-                # Get the final result from agent history
-                result_text = str(history)
+                result_text = "Task executed successfully"
+                if history:
+                    result_text = str(history)
 
-            return {
-                "success": True,
-                "message": f"Task completed: {task}",
-                "result": result_text,
-            }
+                return {
+                    "success": True,
+                    "message": f"Task completed: {task}",
+                    "result": result_text,
+                }
 
-        except Exception as e:
-            error_msg = f"Browser task failed: {str(e)}"
-            logger.error(error_msg)
-            self._emit_status(error_msg)
-            return {
-                "success": False,
-                "message": error_msg,
-                "error": str(e),
-            }
+            except Exception as e:
+                last_error = e
+                if _is_retryable_error(e) and attempt < max_retries:
+                    wait = backoff_seconds[attempt - 1]
+                    logger.warning(
+                        "BrowserAgent: retryable error on attempt %d/%d, waiting %ds: %s",
+                        attempt, max_retries, wait, e,
+                    )
+                    self._emit_status(f"Browser error (attempt {attempt}/{max_retries}), retrying in {wait}s...")
+                    await asyncio.sleep(wait)
+                    await self._try_recover_browser()
+                    continue
+
+                # Non-retryable error — break immediately
+                break
+
+        # All retries exhausted or non-retryable error
+        error_str = str(last_error) if last_error else "Unknown error"
+        error_msg = f"Browser task failed after {max_retries} attempts: {error_str}"
+        logger.error(error_msg)
+        self._emit_status(error_msg)
+        return {
+            "success": False,
+            "message": error_msg,
+            "error": error_str,
+        }
 
     async def navigate_to(self, url: str) -> dict[str, Any]:
         """Navigate browser to a specific URL.

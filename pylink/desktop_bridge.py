@@ -312,9 +312,27 @@ def main() -> int:
             "model": _get_voice_model_state(),
         }
 
+    # Register pre-task announcement callback so voice speaks BEFORE execution
+    def _pre_task_announce(msg: str) -> None:
+        """Speak pre-task announcement and emit status to Electron."""
+        _write_json({"status": "pre_task_announcement", "message": msg})
+        if voice_controller and voice_output_enabled:
+            try:
+                voice_controller.speak(msg, blocking=True)
+            except Exception:
+                pass
+
+    runtime.set_pre_task_callback(_pre_task_announce)
+
     def _speak_pre_task(result: dict[str, Any]) -> None:
-        """Speak the pre-task announcement before executing."""
+        """Speak the pre-task announcement before executing.
+        Skips if pre-task was already announced via callback.
+        """
         if not voice_controller or not voice_output_enabled:
+            return
+
+        # Skip if the pre-task callback already spoke this
+        if result.get("pre_task_announced"):
             return
 
         pre_msg = str(result.get("pre_task_message", "")).strip()

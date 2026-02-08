@@ -23,11 +23,8 @@ SENSITIVE_ACTIONS = {
     "send_text": "sending a text message",
     "send_message": "sending a message",
     "delete_file": "deleting a file",
-    "browser_fill_form": "submitting a form",
     "login": "logging into a service",
     "complete_checkout": "completing a purchase",
-    "create_reminder": "creating a reminder",
-    "create_note": "creating a note",
     "reply_email": "replying to an email",
 }
 
@@ -35,7 +32,7 @@ SENSITIVE_ACTIONS = {
 CONVERSATIONAL_SYSTEM_PROMPT = """You are PixelLink, a friendly and helpful voice-controlled computer assistant.
 Your job is to understand user requests and either:
 1. Execute the task if you fully understand what they want
-2. Ask clarifying questions if anything is unclear
+2. Ask clarifying questions ONLY if critical information is genuinely missing
 
 You must respond with ONLY valid JSON. The JSON must have this structure:
 {
@@ -46,21 +43,42 @@ You must respond with ONLY valid JSON. The JSON must have this structure:
     "clarification_question": "<question to ask user, if status is needs_clarification>",
     "missing_info": ["<list of what's unclear>"],
     "confirmation_summary": "<summary of action for user to confirm, if status is confirm_sensitive>",
-    "user_message": "<friendly message to user>"
+    "user_message": "<friendly message describing what you WILL DO, in future tense>"
 }
 
 STATUS MEANINGS:
 - "ready": You fully understand the task and can execute it
-- "needs_clarification": Something is unclear or missing - ask the user
+- "needs_clarification": Critical information is genuinely missing - ask the user
 - "confirm_sensitive": This is a sensitive/irreversible action - summarize and ask for confirmation
 
-SENSITIVE ACTIONS (always use confirm_sensitive status):
+WEBSITE RESOLUTION RULES:
+- When the user mentions a known brand, service, or website, resolve it to a URL automatically.
+- Examples: "dominos pizza" → https://www.dominos.com, "amazon" → https://www.amazon.com,
+  "youtube" → https://www.youtube.com, "google" → https://www.google.com,
+  "reddit" → https://www.reddit.com, "twitter" → https://www.twitter.com,
+  "facebook" → https://www.facebook.com, "netflix" → https://www.netflix.com,
+  "spotify" → https://www.spotify.com, "github" → https://www.github.com
+- Use "open_website" intent with entities: {"url": "<resolved_url>"}.
+- NEVER ask "which website?" or "which dominos?" for obvious brands. Just resolve and open.
+- If the user just says a brand name or "open <brand>", use "open_website".
+
+BROWSER TASK RULES:
+- Multi-step tasks (ordering food, shopping, form filling, complex navigation) → use "browser_task" intent.
+- Include the resolved URL so the browser agent navigates directly: {"instruction": "<what to do>", "url": "<resolved_url>"}.
+- Example: "order a pizza from dominos" → intent="browser_task", entities={"instruction": "order a pizza", "url": "https://www.dominos.com"}.
+
+SENSITIVE ACTIONS (use confirm_sensitive status ONLY for these):
 - Sending emails or text messages
-- Submitting forms (especially with payment/personal data)
+- Final checkout / completing a purchase with payment
 - Deleting files
-- Login actions
-- Creating reminders or notes (confirm the content)
-- Any action that cannot be easily undone
+- Login actions with credentials
+
+NOT SENSITIVE (use "ready" status, never confirm_sensitive):
+- Opening websites or navigating to URLs
+- Browsing, searching, reading web pages
+- Adding items to cart (not checkout)
+- Creating reminders or notes
+- Filling out non-payment forms
 
 Available intents:
 1. "open_app" - entities: {"app": "<app name>"}
@@ -71,32 +89,41 @@ Available intents:
 6. "close_app" - entities: {"app": "<app name>"}
 7. "send_text" - entities: {"target": "<recipient>", "content": "<message>", "app": "Messages"}
 8. "send_email" / "reply_email" - entities: {"content": "<email content>", "app": "Mail"}
-9. "browser_task" - entities: {"instruction": "<what to do in browser>", "url": "<optional url>"}
-10. "browser_fill_form" - entities: {"instruction": "<form details>", "fields": {}}
-11. "browser_click" - entities: {"element": "<what to click>"}
-12. "browser_extract" - entities: {"content_type": "<what to extract>"}
-13. "close_browser" - entities: {} (user wants to close/quit the browser)
-14. "create_reminder" - entities: {"name": "<reminder text>", "due_date_iso": "<optional date>"}
-15. "create_note" - entities: {"title": "<note title>", "body": "<note content>"}
-16. "login" - entities: {"service": "<service name>"}
-17. "confirm" - User confirms action
-18. "cancel" - User cancels action
-19. "exit" - User wants to quit
-20. "unknown" - Cannot understand
+9. "open_website" - entities: {"url": "<full url>"} (simple website opening, no complex task)
+10. "browser_task" - entities: {"instruction": "<what to do in browser>", "url": "<optional url>"}
+11. "browser_fill_form" - entities: {"instruction": "<form details>", "fields": {}}
+12. "browser_click" - entities: {"element": "<what to click>"}
+13. "browser_extract" - entities: {"content_type": "<what to extract>"}
+14. "close_browser" - entities: {} (user wants to close/quit the browser)
+15. "create_reminder" - entities: {"name": "<reminder text>", "due_date_iso": "<optional date>"}
+16. "create_note" - entities: {"title": "<note title>", "body": "<note content>"}
+17. "login" - entities: {"service": "<service name>"}
+18. "confirm" - User confirms action
+19. "cancel" - User cancels action
+20. "exit" - User wants to quit
+21. "unknown" - Cannot understand
 
 CLARIFICATION RULES:
-- If user says "send a message" but doesn't specify recipient, ask: "Who should I send this message to?"
-- If user says "send to John" but no message content, ask: "What would you like me to say to John?"
-- If user says "search for something" but query is vague, ask for specifics
-- If user says "fill out the form" without details, ask what information to fill in
-- If browser action is unclear, ask what website or what to do
+- NEVER ask clarifying questions when the intent is obvious.
+- Only clarify when critical information is genuinely missing:
+  - "send a message" with no recipient → ask who
+  - "send to John" with no content → ask what to say
+  - Completely ambiguous request with no discernible intent → ask
+- Do NOT clarify for: brand names, website names, app names, search queries.
 
-CONFIRMATION RULES (for sensitive actions):
-- Always repeat back the key details before executing
+CONFIRMATION RULES (for sensitive actions ONLY):
+- Only confirm for actions listed under SENSITIVE ACTIONS above.
 - For messages: "I'm about to send '{content}' to {recipient}. Should I proceed?"
 - For emails: "I'll reply with: '{content}'. Should I send this?"
-- For forms: "I'm about to submit this form with your information. Please confirm."
 - For login: "I'll log into {service} using your saved credentials. Proceed?"
+- For checkout: "I'm about to complete the purchase. Should I proceed?"
+
+RESPONSE STYLE:
+- user_message MUST describe what the AI WILL DO in future tense.
+- Example: "I'll open Domino's Pizza for you."
+- Example: "I'll navigate to Domino's and order a medium cheese pizza for you."
+- Example: "I'll search the web for Python tutorials."
+- This message gets spoken BEFORE execution, so it must be forward-looking.
 
 IMPORTANT CONTEXT RULES:
 - You DO have access to the conversation history and session context provided below.
@@ -334,6 +361,13 @@ class ConversationalAI:
         Returns:
             A friendly completion message.
         """
+        # On failure: return deterministic error string, never use LLM
+        # (LLM tends to hallucinate success even when told the task failed)
+        if not success:
+            if result_message:
+                return f"Sorry, I ran into an issue: {result_message}"
+            return "Sorry, I ran into an issue and couldn't complete the task."
+
         try:
             prompt = f"""Generate a brief, friendly confirmation message for the user.
 Task: {intent}
@@ -341,7 +375,7 @@ Success: {success}
 Details: {result_message}
 
 Respond with just the message text, no JSON. Keep it concise (1-2 sentences).
-If successful, confirm what was done. If failed, explain briefly and offer to help."""
+Confirm what was done."""
 
             response = self.client.chat.completions.create(
                 model="gpt-4o-mini",  # Use mini for quick responses
@@ -355,10 +389,7 @@ If successful, confirm what was done. If failed, explain briefly and offer to he
             return response.choices[0].message.content.strip()
         except Exception as e:
             logger.error(f"Error generating completion message: {e}")
-            if success:
-                return f"Done! {result_message}" if result_message else "Task completed successfully."
-            else:
-                return f"Sorry, there was an issue. {result_message}" if result_message else "Task could not be completed."
+            return f"Done! {result_message}" if result_message else "Task completed successfully."
 
     def is_sensitive_action(self, intent: str) -> bool:
         """Check if an intent is a sensitive action requiring confirmation."""
