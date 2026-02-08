@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import signal
 import sys
 import threading
@@ -21,6 +22,8 @@ from bridge import load_plugins
 try:
     from core.eye.eye_control import (
         BlinkType,
+        get_eye_control_diagnostics,
+        get_eye_control_last_error,
         is_eye_control_available,
         start_eye_loop as _eye_start,
         stop_eye_loop as _eye_stop,
@@ -30,6 +33,8 @@ except Exception:
     _eye_stop = None  # type: ignore[assignment]
     BlinkType = None  # type: ignore[assignment]
     is_eye_control_available = lambda: False  # type: ignore[assignment]
+    get_eye_control_diagnostics = None  # type: ignore[assignment]
+    get_eye_control_last_error = lambda: ""  # type: ignore[assignment]
 
 
 _WRITE_LOCK = threading.Lock()
@@ -73,10 +78,45 @@ def _resolve_blink_action(blink_value: str, pending: bool) -> str | None:
     return None
 
 
+def _platform_profile() -> dict[str, Any]:
+    system_name = platform.system().lower()
+    if system_name == "darwin":
+        return {
+            "os": system_name,
+            "support_tier": "stable",
+            "message": "macOS runtime is the primary supported platform.",
+        }
+    if system_name == "windows":
+        return {
+            "os": system_name,
+            "support_tier": "experimental",
+            "message": "Windows support is experimental; some OS automation flows may be limited.",
+        }
+    if system_name == "linux":
+        return {
+            "os": system_name,
+            "support_tier": "experimental",
+            "message": "Linux support is experimental; app focus/launch behavior can vary by distro/desktop.",
+        }
+    return {
+        "os": system_name,
+        "support_tier": "unsupported",
+        "message": f"Platform '{system_name}' is not officially supported.",
+    }
+
+
 def _runtime_state(runtime: PixelLinkRuntime) -> dict[str, Any]:
+    pending_action = None
+    if runtime.session.pending_steps:
+        step = runtime.session.pending_steps[0]
+        pending_action = {
+            "action": getattr(step, "action", ""),
+            "description": getattr(step, "description", ""),
+        }
     return {
         "pending_confirmation": bool(runtime.session.pending_steps),
         "pending_clarification": bool(runtime.session.pending_clarification),
+        "pending_action": pending_action,
         "clarification_prompt": (runtime.session.pending_clarification or {}).get("prompt", ""),
         "last_app": runtime.session.last_app,
         "history_count": len(runtime.session.history),
@@ -216,6 +256,7 @@ def main() -> int:
     enable_kill_switch = _as_bool(os.getenv("PIXELINK_ENABLE_KILL_SWITCH"), default=False)
     requested_voice_output = _as_bool(os.getenv("PIXELINK_VOICE_OUTPUT"), default=True)
     requested_voice_input = _as_bool(os.getenv("PIXELINK_VOICE_INPUT"), default=True)
+    platform_profile = _platform_profile()
 
     calendar_credentials = os.getenv("PIXELINK_CALENDAR_CREDENTIALS_PATH")
     calendar_token = os.getenv("PIXELINK_CALENDAR_TOKEN_PATH")
@@ -226,15 +267,17 @@ def main() -> int:
     user_config: dict[str, dict[str, Any]] = {
         "reminders-mcp": {},
         "notes-mcp": {},
-        "calendar-mcp": {
-            **({"credentials_path": calendar_credentials} if calendar_credentials else {}),
-            **({"token_path": calendar_token} if calendar_token else {}),
-        },
-        "gmail-mcp": {
-            **({"credentials_path": gmail_credentials} if gmail_credentials else {}),
-            **({"token_path": gmail_token} if gmail_token else {}),
-        },
     }
+    if calendar_credentials:
+        user_config["calendar-mcp"] = {
+            "credentials_path": calendar_credentials,
+            **({"token_path": calendar_token} if calendar_token else {}),
+        }
+    if gmail_credentials:
+        user_config["gmail-mcp"] = {
+            "credentials_path": gmail_credentials,
+            **({"token_path": gmail_token} if gmail_token else {}),
+        }
     try:
         mcp_tools = load_plugins(ROOT / "plugins", user_config)
         tool_map = {tool["name"]: tool["fn"] for tool in mcp_tools}
@@ -269,6 +312,10 @@ def main() -> int:
 
     voice_input_enabled = bool(voice_controller and voice_controller.stt_available)
     voice_output_enabled = bool(voice_controller and voice_controller.tts_available)
+    if requested_voice_input and not voice_input_enabled and "stt" not in voice_errors:
+        voice_errors["stt"] = "Speech input is unavailable in this environment."
+    if requested_voice_output and not voice_output_enabled and "tts" not in voice_errors:
+        voice_errors["tts"] = "Speech output is unavailable in this environment."
     voice_model_lock = threading.Lock()
     voice_model_state: dict[str, Any] = (
         voice_controller.stt_model_status if voice_controller and voice_input_enabled else {
@@ -300,10 +347,68 @@ def main() -> int:
             }
         )
 
+    def _eye_available(*, check_camera: bool, ensure_model: bool) -> bool:
+        if callable(get_eye_control_diagnostics):
+            try:
+                diagnostics = get_eye_control_diagnostics(
+                    check_camera=check_camera,
+                    ensure_model=ensure_model,
+                )
+                return bool(diagnostics.get("available", False))
+            except TypeError:
+                pass
+            except Exception:
+                return False
+        if not callable(is_eye_control_available):
+            return False
+        try:
+            return bool(
+                is_eye_control_available(
+                    check_camera=check_camera,
+                    ensure_model=ensure_model,
+                )
+            )
+        except TypeError:
+            # Backward compatibility for fallback stubs without keyword args.
+            return bool(is_eye_control_available())
+
+    def _eye_diagnostics(
+        *,
+        check_camera: bool,
+        ensure_model: bool,
+        require_frame: bool = False,
+    ) -> dict[str, Any]:
+        if callable(get_eye_control_diagnostics):
+            try:
+                diagnostics = get_eye_control_diagnostics(
+                    check_camera=check_camera,
+                    ensure_model=ensure_model,
+                    require_frame=require_frame,
+                )
+                if isinstance(diagnostics, dict):
+                    return diagnostics
+            except TypeError:
+                pass
+            except Exception as exc:
+                return {
+                    "available": False,
+                    "reason_code": "probe_failed",
+                    "reason": str(exc),
+                }
+        return {
+            "available": _eye_available(check_camera=check_camera, ensure_model=ensure_model),
+            "reason_code": "legacy_probe",
+            "reason": "",
+        }
+
     # Eye control state (updated by eye loop callbacks)
     eye_control_state: dict[str, Any] = {
         "active": False,
-        "available": is_eye_control_available() if callable(is_eye_control_available) else False,
+        # Startup check avoids touching camera or downloading model assets.
+        "available": _eye_available(check_camera=False, ensure_model=False),
+        "availability_code": "",
+        "availability_reason": "",
+        "availability_stage": "startup_soft",
         "last_gaze": None,
         "last_blink": None,
         "last_ear": None,
@@ -314,12 +419,43 @@ def main() -> int:
         "backend": None,
         "preview_active": False,
         "last_error": None,
+        "diagnostics": {},
     }
+
+    startup_diagnostics = _eye_diagnostics(check_camera=False, ensure_model=False)
+    eye_control_state["available"] = bool(startup_diagnostics.get("available", False))
+    eye_control_state["availability_code"] = startup_diagnostics.get("reason_code", "")
+    eye_control_state["availability_reason"] = startup_diagnostics.get("reason", "")
+    eye_control_state["diagnostics"] = startup_diagnostics
+
+    def _sync_eye_availability(
+        *,
+        check_camera: bool,
+        ensure_model: bool,
+        require_frame: bool = False,
+        stage: str = "runtime",
+    ) -> dict[str, Any]:
+        diagnostics = _eye_diagnostics(
+            check_camera=check_camera,
+            ensure_model=ensure_model,
+            require_frame=require_frame,
+        )
+        eye_control_state["available"] = bool(diagnostics.get("available", False))
+        eye_control_state["availability_code"] = diagnostics.get("reason_code", "")
+        eye_control_state["availability_reason"] = diagnostics.get("reason", "")
+        eye_control_state["availability_stage"] = stage
+        eye_control_state["diagnostics"] = diagnostics
+        if not eye_control_state["available"] and diagnostics.get("reason"):
+            eye_control_state["last_error"] = diagnostics.get("reason")
+        return diagnostics
 
     def _eye_payload() -> dict[str, Any]:
         return {
             "active": eye_control_state.get("active", False),
             "available": eye_control_state.get("available", False),
+            "availability_code": eye_control_state.get("availability_code"),
+            "availability_reason": eye_control_state.get("availability_reason"),
+            "availability_stage": eye_control_state.get("availability_stage"),
             "last_gaze": eye_control_state.get("last_gaze"),
             "last_blink": eye_control_state.get("last_blink"),
             "last_ear": eye_control_state.get("last_ear"),
@@ -330,6 +466,7 @@ def main() -> int:
             "backend": eye_control_state.get("backend"),
             "preview_active": eye_control_state.get("preview_active"),
             "last_error": eye_control_state.get("last_error"),
+            "diagnostics": eye_control_state.get("diagnostics", {}),
         }
 
     def _get_screen_size() -> tuple[int, int]:
@@ -377,10 +514,20 @@ def main() -> int:
                 pass
 
     def _eye_control_start() -> bool:
-        if not _eye_start or not (eye_control_state.get("available")):
+        if not _eye_start:
+            eye_control_state["last_error"] = "Eye control runtime is unavailable."
             return False
         if eye_control_state.get("active"):
             return True
+        diagnostics = _sync_eye_availability(
+            check_camera=True,
+            ensure_model=True,
+            require_frame=True,
+            stage="activation",
+        )
+        if not eye_control_state.get("available"):
+            eye_control_state["last_error"] = diagnostics.get("reason") or "Eye control unavailable."
+            return False
         ok = _eye_start(
             _on_gaze,
             _on_blink,
@@ -389,6 +536,20 @@ def main() -> int:
             _on_metrics,
         )
         eye_control_state["active"] = ok
+        if ok:
+            eye_control_state["last_error"] = None
+        else:
+            last_eye_error = ""
+            if callable(get_eye_control_last_error):
+                try:
+                    last_eye_error = str(get_eye_control_last_error() or "")
+                except Exception:
+                    last_eye_error = ""
+            eye_control_state["last_error"] = (
+                last_eye_error
+                or diagnostics.get("reason")
+                or "Eye control failed to start."
+            )
         return ok
 
     def _eye_control_stop() -> None:
@@ -396,14 +557,32 @@ def main() -> int:
             _eye_stop()
         eye_control_state["active"] = False
         eye_control_state["preview_active"] = False
+        _sync_eye_availability(check_camera=False, ensure_model=False, stage="idle")
 
     def _voice_state() -> dict[str, Any]:
+        availability = (
+            voice_controller.availability_report
+            if voice_controller and hasattr(voice_controller, "availability_report")
+            else {
+                "requested_input": requested_voice_input,
+                "requested_output": requested_voice_output,
+                "input_enabled": voice_input_enabled,
+                "output_enabled": voice_output_enabled,
+                "errors": voice_errors,
+            }
+        )
+        availability["requested_input"] = requested_voice_input
+        availability["requested_output"] = requested_voice_output
+        availability["input_enabled"] = voice_input_enabled
+        availability["output_enabled"] = voice_output_enabled
+        availability["errors"] = dict(voice_errors)
         return {
             "requested_input": requested_voice_input,
             "requested_output": requested_voice_output,
             "input_enabled": voice_input_enabled,
             "output_enabled": voice_output_enabled,
             "errors": voice_errors,
+            "availability": availability,
             "model": _get_voice_model_state(),
         }
 
@@ -443,6 +622,7 @@ def main() -> int:
             "message": "PixelLink bridge online",
             "dry_run": dry_run,
             "speed": speed,
+            "platform": platform_profile,
             "voice": _voice_state(),
             "eye_control": _eye_payload(),
         }
@@ -603,13 +783,13 @@ def main() -> int:
                         permission_profile=payload.get("permission_profile"),
                     )
                     if "voice_output_enabled" in payload:
-                        requested = bool(payload.get("voice_output_enabled"))
-                        voice_output_enabled = requested and bool(
+                        requested_voice_output = bool(payload.get("voice_output_enabled"))
+                        voice_output_enabled = requested_voice_output and bool(
                             voice_controller and voice_controller.tts_available
                         )
                     if "voice_input_enabled" in payload:
-                        requested = bool(payload.get("voice_input_enabled"))
-                        voice_input_enabled = requested and bool(
+                        requested_voice_input = bool(payload.get("voice_input_enabled"))
+                        voice_input_enabled = requested_voice_input and bool(
                             voice_controller and voice_controller.stt_available
                         )
                         if voice_controller and voice_input_enabled:
@@ -635,20 +815,11 @@ def main() -> int:
                 continue
 
             if action == "get_state":
-                _write_json(
-                    {
-                        "status": "state",
-                        "pending_confirmation": bool(runtime.session.pending_steps),
-                        "pending_clarification": bool(runtime.session.pending_clarification),
-                        "clarification_prompt": (runtime.session.pending_clarification or {}).get("prompt", ""),
-                        "last_app": runtime.session.last_app,
-                        "history_count": len(runtime.session.history),
-                        "affection": runtime.session.last_affection,
-                    }
-                )
                 response = {
                     "status": "state",
                     **_runtime_state(runtime),
+                    "platform": platform_profile,
+                    "affection": runtime.session.last_affection,
                     "voice": _voice_state(),
                     "eye_control": _eye_payload(),
                 }
@@ -658,20 +829,21 @@ def main() -> int:
                 continue
 
             if action == "eye_control_start":
-                if not eye_control_state.get("available"):
+                ok = _eye_control_start()
+                if not ok:
                     _write_json(
                         _build_error(
-                            message="Eye control unavailable (camera or dependencies missing).",
-                            code="EYE_CONTROL_UNAVAILABLE",
+                            message=eye_control_state.get("last_error")
+                            or "Eye control unavailable (camera or dependencies missing).",
+                            code="EYE_CONTROL_START_FAILED",
                             request_id=request_id,
                             extra={"eye_control": _eye_payload()},
                         )
                     )
                     continue
-                ok = _eye_control_start()
                 response = {
-                    "status": "ok" if ok else "error",
-                    "message": "Eye control started." if ok else "Failed to start eye control.",
+                    "status": "ok",
+                    "message": "Eye control started.",
                     "eye_control": _eye_payload(),
                 }
                 if request_id is not None:
@@ -692,6 +864,7 @@ def main() -> int:
                 continue
 
             if action == "eye_control_get_state":
+                _sync_eye_availability(check_camera=False, ensure_model=False, stage="query")
                 response = {
                     "status": "state",
                     "eye_control": _eye_payload(),

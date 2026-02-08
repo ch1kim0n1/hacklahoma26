@@ -204,8 +204,8 @@ class ActionPlanner:
                 ActionStep(
                     "autofill_login",
                     {"service": service},
-                    False,
-                    f"Login to {service} with saved credentials",
+                    guard.requires_confirmation("autofill_login"),
+                    f"Autofill saved credentials for {service}",
                 )
             )
 

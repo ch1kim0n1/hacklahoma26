@@ -71,6 +71,7 @@ EYE_PREVIEW_WINDOW_NAME = "PixelLink Eye Control"
 
 _stop_event: threading.Event | None = None
 _eye_thread: threading.Thread | None = None
+_last_start_error: str | None = None
 
 
 def _as_bool(value: str | None, default: bool) -> bool:
@@ -389,15 +390,18 @@ def _run_eye_loop(
     on_metrics: Callable[[dict[str, Any]], None] | None,
 ) -> None:
     """Run webcam loop in current thread. Exits when _stop_event is set."""
-    global _stop_event
+    global _stop_event, _last_start_error
     if cv2 is None:
+        _last_start_error = "OpenCV dependency is unavailable."
         return
     backend_info = _create_landmark_backend()
     if backend_info is None:
+        _last_start_error = "Failed to initialize MediaPipe eye landmark backend."
         return
     backend_kind, landmark_backend = backend_info
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
+        _last_start_error = "Unable to open camera device 0."
         cap.release()
         return
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAM_WIDTH)
@@ -541,6 +545,8 @@ def _run_eye_loop(
             sleep_time = frame_interval - elapsed
             if sleep_time > 0:
                 time.sleep(sleep_time)
+    except Exception as exc:
+        _last_start_error = f"Eye loop runtime error: {type(exc).__name__}: {exc}"
     finally:
         if preview_enabled and cv2 is not None:
             try:
@@ -551,23 +557,99 @@ def _run_eye_loop(
         cap.release()
 
 
-def is_eye_control_available() -> bool:
-    """Return True if opencv and mediapipe are available and camera can be opened."""
+def get_eye_control_diagnostics(
+    *,
+    check_camera: bool = True,
+    ensure_model: bool = True,
+    require_frame: bool = False,
+) -> dict[str, Any]:
+    """Probe eye-control readiness with explicit diagnostics."""
+    result: dict[str, Any] = {
+        "available": False,
+        "reason_code": "",
+        "reason": "",
+        "backend": None,
+        "camera_checked": bool(check_camera),
+        "camera_ok": None,
+        "frame_ok": None,
+        "model_ready": None,
+    }
+
     if cv2 is None:
-        return False
+        result["reason_code"] = "missing_opencv"
+        result["reason"] = "OpenCV dependency is missing."
+        return result
+    if mp is None:
+        result["reason_code"] = "missing_mediapipe"
+        result["reason"] = "MediaPipe dependency is missing."
+        return result
+
+    backend = None
     if _is_mediapipe_face_mesh_available():
-        pass
+        backend = "face_mesh"
+        result["model_ready"] = True
     elif _is_mediapipe_task_landmarker_available():
-        if _ensure_face_landmarker_model() is None:
-            return False
+        backend = "task_landmarker"
+        model_ok = True
+        if ensure_model:
+            model_ok = _ensure_face_landmarker_model() is not None
+        result["model_ready"] = bool(model_ok)
+        if not model_ok:
+            result["reason_code"] = "model_unavailable"
+            result["reason"] = "FaceLandmarker model is missing or failed to download."
+            result["backend"] = backend
+            return result
     else:
-        return False
+        result["reason_code"] = "unsupported_mediapipe_runtime"
+        result["reason"] = "No supported MediaPipe face landmark backend was found."
+        return result
+
+    result["backend"] = backend
+    if not check_camera:
+        result["available"] = True
+        result["reason_code"] = "ok_soft"
+        result["reason"] = "Dependencies are available; camera not verified."
+        return result
+
     cap = cv2.VideoCapture(0)
     try:
-        ok = cap.isOpened()
+        camera_ok = bool(cap.isOpened())
+        result["camera_ok"] = camera_ok
+        if not camera_ok:
+            result["reason_code"] = "camera_unavailable"
+            result["reason"] = "Camera device is unavailable or permission is denied."
+            return result
+
+        if require_frame:
+            frame_ok, _frame = cap.read()
+            result["frame_ok"] = bool(frame_ok)
+            if not frame_ok:
+                result["reason_code"] = "camera_frame_failed"
+                result["reason"] = "Camera opened but no frames were received."
+                return result
     finally:
         cap.release()
-    return ok
+
+    result["available"] = True
+    result["reason_code"] = "ok"
+    result["reason"] = "Eye control is ready."
+    return result
+
+
+def is_eye_control_available(check_camera: bool = True, ensure_model: bool = True) -> bool:
+    """
+    Return True if eye control dependencies are available.
+
+    Args:
+        check_camera: When True, verify that a camera can be opened.
+        ensure_model: When True, ensure the task-landmarker model is present.
+            Set False for startup checks to avoid network/download side effects.
+    """
+    diagnostics = get_eye_control_diagnostics(
+        check_camera=check_camera,
+        ensure_model=ensure_model,
+    )
+    return bool(diagnostics.get("available", False))
 
 
 def start_eye_loop(
@@ -586,11 +668,18 @@ def start_eye_loop(
     on_metrics receives frame-level telemetry for UI diagnostics.
     Returns True if started, False if dependencies missing or camera unavailable.
     """
-    global _stop_event, _eye_thread
-    if not is_eye_control_available():
+    global _stop_event, _eye_thread, _last_start_error
+    diagnostics = get_eye_control_diagnostics(
+        check_camera=True,
+        ensure_model=True,
+        require_frame=True,
+    )
+    if not diagnostics.get("available"):
+        _last_start_error = str(diagnostics.get("reason", "Eye control is unavailable."))
         return False
     if _stop_event is not None and _eye_thread is not None and _eye_thread.is_alive():
         return True  # already running
+    _last_start_error = None
     _stop_event = threading.Event()
     _eye_thread = threading.Thread(
         target=_run_eye_loop,
@@ -607,6 +696,7 @@ def start_eye_loop(
     # If the loop exits immediately (e.g. backend init failure), report failure.
     time.sleep(0.05)
     if not _eye_thread.is_alive():
+        _last_start_error = _last_start_error or "Eye control loop exited during startup."
         _stop_event = None
         _eye_thread = None
         return False
@@ -622,3 +712,8 @@ def stop_eye_loop() -> None:
         _eye_thread.join(timeout=2.0)
     _stop_event = None
     _eye_thread = None
+
+
+def get_eye_control_last_error() -> str:
+    """Last startup/runtime eye-control error message."""
+    return _last_start_error or ""

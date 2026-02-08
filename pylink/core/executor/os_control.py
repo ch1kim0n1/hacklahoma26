@@ -1,4 +1,5 @@
 import platform
+import shutil
 import subprocess
 from typing import Optional
 from urllib.parse import urlparse
@@ -18,10 +19,18 @@ class OSController:
             raise ValueError("App name cannot be empty")
 
         # Check for shell metacharacters that could be dangerous
-        dangerous_chars = [";", "|", "&", "$", "`", "(", ")", "<", ">", "\n", "\r"]
+        dangerous_chars = [";", "|", "&", "$", "`", "(", ")", "<", ">", "\n", "\r", '"', "\\"]
         for char in dangerous_chars:
             if char in app_name:
                 raise ValueError(f"Invalid app name: contains dangerous character '{char}'")
+
+    def _require_command(self, command: str, hint: str = "") -> None:
+        if shutil.which(command):
+            return
+        message = f"Required system command '{command}' is unavailable."
+        if hint:
+            message = f"{message} {hint}"
+        raise RuntimeError(message)
     
     def is_app_running(self, app_name: str) -> bool:
         """Check if an application is currently running."""
@@ -73,17 +82,19 @@ class OSController:
             raise ValueError("App name is required")
 
         self._validate_app_name(app_name)
+        system = platform.system().lower()
         
         # Check if app is already running - if so, just focus it
         if self.is_app_running(app_name):
+            if system != "darwin":
+                # Non-macOS focus behavior is not consistent. Avoid recursive open/focus loops.
+                return
             try:
                 self.focus_app(app_name)
                 return  # App was already running, we focused it
             except Exception:
                 # If focus fails, fall through to opening
                 pass
-        
-        system = platform.system().lower()
 
         try:
             if system == "darwin":
@@ -95,6 +106,7 @@ class OSController:
                     check=True
                 )
             elif system == "windows":
+                self._require_command("cmd")
                 result = subprocess.run(
                     ["cmd", "/c", "start", "", app_name],
                     capture_output=True,
@@ -103,6 +115,7 @@ class OSController:
                     check=True
                 )
             else:  # Linux
+                self._require_command("xdg-open", "Install xdg-utils to enable app launching.")
                 result = subprocess.run(
                     ["xdg-open", app_name],
                     capture_output=True,
@@ -197,8 +210,10 @@ class OSController:
             if system == "darwin":
                 subprocess.run(["open", url], capture_output=True, text=True, timeout=5, check=True)
             elif system == "windows":
+                self._require_command("cmd")
                 subprocess.run(["cmd", "/c", "start", "", url], capture_output=True, text=True, timeout=5, check=True)
             else:
+                self._require_command("xdg-open", "Install xdg-utils to enable URL opening.")
                 subprocess.run(["xdg-open", url], capture_output=True, text=True, timeout=5, check=True)
         except subprocess.CalledProcessError as e:
             error_output = e.stderr.strip() if e.stderr else str(e)
@@ -212,8 +227,10 @@ class OSController:
             if system == "darwin":
                 subprocess.run(["open", file_path], capture_output=True, text=True, timeout=5, check=True)
             elif system == "windows":
+                self._require_command("cmd")
                 subprocess.run(["cmd", "/c", "start", "", file_path], capture_output=True, text=True, timeout=5, check=True)
             else:
+                self._require_command("xdg-open", "Install xdg-utils to enable file opening.")
                 subprocess.run(["xdg-open", file_path], capture_output=True, text=True, timeout=5, check=True)
         except subprocess.CalledProcessError as e:
             error_output = e.stderr.strip() if e.stderr else str(e)

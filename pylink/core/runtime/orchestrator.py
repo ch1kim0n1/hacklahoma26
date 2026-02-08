@@ -235,43 +235,6 @@ class PixelLinkRuntime:
                     source=source,
                     intent=intent,
                 )        
-        # Handle login/autofill
-        if intent.name == "login":
-            service = intent.entities.get("service", "")
-            from core.context.password_manager import get_password_manager
-            
-            pm = get_password_manager()
-            cred = pm.get_credential(service)
-            
-            if cred:
-                # Create steps for autofill
-                from core.planner.action_planner import ActionStep
-                
-                steps = [
-                    ActionStep("type_text", {"content": cred.username}, False, "Enter username"),
-                    ActionStep("press_key", {"key": "tab"}, False, "Move to password field"),
-                    ActionStep("type_text", {"content": cred.password}, False, "Enter password"),
-                ]
-                
-                result = self.executor.execute_steps(steps, self.guard)
-                
-                if result.completed:
-                    return self._response(
-                        "completed",
-                        f"Autofilled credentials for {service} ({cred.username})",
-                        source=source,
-                        intent=intent,
-                        steps=steps,
-                    )
-                else:
-                    return self._response("error", "Failed to autofill credentials", source=source, intent=intent)
-            else:
-                return self._response(
-                    "error",
-                    f"No credentials found for '{service}' in password manager. Please add them to your Keychain first.",
-                    source=source,
-                    intent=intent,
-                )
         if intent.name == "send_text":
             recipient = str(intent.entities.get("target", "")).strip()
             content = str(intent.entities.get("content", "")).strip()
@@ -629,9 +592,19 @@ class PixelLinkRuntime:
 
         if result.pending_steps:
             self.session.set_pending(result.pending_steps)
+            first_pending = result.pending_steps[0]
+            message = "Awaiting confirmation to proceed."
+            if first_pending.action == "autofill_login":
+                service = str(first_pending.params.get("service", "")).strip()
+                service_label = service or "the requested service"
+                message = (
+                    f"Ready to autofill credentials for {service_label}. "
+                    "Say 'confirm' to proceed or 'cancel' to abort. "
+                    "Credentials stay local and are never shown in the UI."
+                )
             return self._response(
                 "awaiting_confirmation",
-                "Awaiting confirmation to proceed.",
+                message,
                 source=source,
                 intent=intent,
                 steps=steps,
@@ -647,7 +620,13 @@ class PixelLinkRuntime:
                 steps=steps,
             )
 
-        return self._response("error", "Task did not complete.", source=source, intent=intent, steps=steps)
+        return self._response(
+            "error",
+            result.error or "Task did not complete.",
+            source=source,
+            intent=intent,
+            steps=steps,
+        )
 
     def _handle_clarification(self, user_reply: str, source: str) -> dict[str, Any]:
         if user_reply.lower() in {"cancel", "stop", "abort", "no", "nevermind", "never mind"}:
@@ -679,14 +658,20 @@ class PixelLinkRuntime:
             return self._execute_intent(resolved_intent, source)
 
         if intent_name == "reschedule_tasks" and clarification_type == "confirm_reschedule":
-            # User confirmed rescheduling
-            if user_reply.lower() in {"yes", "y", "confirm", "ok", "okay", "sure", "proceed", "go ahead", "do it"}:
+            normalized_reply = user_reply.lower().strip()
+            if normalized_reply in {"yes", "y", "confirm", "ok", "okay", "sure", "proceed", "go ahead", "do it"}:
                 self.session.clear_pending_clarification()
                 recommendations = pending.get("recommendations", [])
                 return self._execute_reschedule(recommendations, source)
-            else:
+            if normalized_reply in {"no", "n", "cancel", "stop", "abort", "nope", "never mind", "nevermind"}:
                 self.session.clear_pending_clarification()
                 return self._response("canceled", "Reschedule canceled. Your tasks remain as is.", source=source)
+            return self._response(
+                "awaiting_clarification",
+                "Please say 'confirm' to apply the reschedule or 'cancel' to keep the current schedule.",
+                source=source,
+                pending_clarification=True,
+            )
 
         self.session.clear_pending_clarification()
         return self._response("error", "Unable to resolve clarification context.", source=source)
@@ -697,7 +682,11 @@ class PixelLinkRuntime:
             self.session.clear_pending()
             if result.completed:
                 return self._response("completed", "Confirmed and completed.", source=source)
-            return self._response("error", "Execution halted during confirmation.", source=source)
+            return self._response(
+                "error",
+                result.error or "Execution halted during confirmation.",
+                source=source,
+            )
         if intent_name == "cancel":
             self.session.clear_pending()
             return self._response("canceled", "Pending actions canceled.", source=source)
@@ -775,7 +764,16 @@ class PixelLinkRuntime:
         affection = self._current_affection or {}
         if not affection.get("should_pause_automation"):
             return False
-        return intent_name not in {"check_mood", "confirm", "cancel"}
+        safety_allowlist = {
+            "check_mood",
+            "confirm",
+            "cancel",
+            "emotional_check_in",
+            "reschedule_tasks",
+            "lighten_load",
+            "check_schedule",
+        }
+        return intent_name not in safety_allowlist
 
     def _response(
         self,
@@ -820,6 +818,7 @@ class PixelLinkRuntime:
             "steps": serialized_steps,
             "pending_confirmation": pending_confirmation or bool(self.session.pending_steps),
             "pending_clarification": pending_clarification or bool(self.session.pending_clarification),
+            "pending_action": _serialize_pending_action(self.session.pending_steps),
             "clarification_prompt": (self.session.pending_clarification or {}).get("prompt", ""),
             "last_app": self.session.last_app,
             "history_count": len(self.session.history),
@@ -861,3 +860,18 @@ def _merge_unique_suggestions(primary: list[str], secondary: list[str], limit: i
         if len(merged) >= limit:
             break
     return merged
+
+
+def _serialize_pending_action(steps: list[Any]) -> dict[str, Any] | None:
+    if not steps:
+        return None
+    first = steps[0]
+    params = dict(first.params)
+    # Keep credential autofill metadata explicit but non-sensitive.
+    if first.action == "autofill_login":
+        params = {"service": str(first.params.get("service", "")).strip()}
+    return {
+        "action": first.action,
+        "description": first.description,
+        "params": params,
+    }

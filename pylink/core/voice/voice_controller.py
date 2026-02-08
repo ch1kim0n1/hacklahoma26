@@ -38,6 +38,8 @@ class VoiceController:
             enable_stt: Whether to enable speech-to-text.
             whisper_model: Whisper model size for STT (tiny, base, small, medium, large-v3).
         """
+        self.requested_tts = bool(enable_tts)
+        self.requested_stt = bool(enable_stt)
         self.enable_tts = enable_tts
         self.enable_stt = enable_stt
         self._init_errors: dict[str, str] = {}
@@ -276,6 +278,17 @@ class VoiceController:
     def init_errors(self) -> dict[str, str]:
         """Initialization errors keyed by subsystem name."""
         return dict(self._init_errors)
+
+    @property
+    def availability_report(self) -> dict[str, Any]:
+        """Requested vs available voice capabilities with initialization diagnostics."""
+        return {
+            "requested_input": self.requested_stt,
+            "requested_output": self.requested_tts,
+            "input_enabled": self.stt_available,
+            "output_enabled": self.tts_available,
+            "errors": self.init_errors,
+        }
 
     @property
     def last_stt_error(self) -> str:

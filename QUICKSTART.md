@@ -78,7 +78,7 @@ python3 demo/email_reply_demo.py
 
 ### Option 2: Interactive Testing
 ```bash
-python3 main.py
+python3 main.py --cli
 ```
 
 **Try these commands:**
@@ -277,7 +277,7 @@ If demo breaks during presentation:
 
 ### Plan A: Switch to Interactive Mode
 ```bash
-python3 main.py
+python3 main.py --cli
 # Type: open Notes
 # Type: type This is a demo
 ```

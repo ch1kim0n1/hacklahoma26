@@ -41,7 +41,7 @@ class KillSwitch:
 class SafetyGuard:
     def __init__(self) -> None:
         self.blocked_actions = {"delete_file", "shutdown_system", "format_drive"}
-        self.confirm_actions = {"send_email", "reply_email"}
+        self.confirm_actions = {"send_email", "reply_email", "autofill_login"}
         self.allowed_actions = {
             "open_app",
             "focus_app",
@@ -59,6 +59,7 @@ class SafetyGuard:
             "send_email",
             "send_message",
             "wait",
+            "autofill_login",
         }
 
     def set_allowed_actions(self, allowed_actions: dict[str, bool] | None) -> None:

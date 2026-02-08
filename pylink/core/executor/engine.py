@@ -15,6 +15,7 @@ from core.safety.guard import KillSwitch, SafetyGuard
 class ExecutionResult:
     completed: bool
     pending_steps: list
+    error: str = ""
 
 
 class ExecutionEngine:
@@ -39,12 +40,13 @@ class ExecutionEngine:
         return self.base_typing_interval / self.speed
 
     def execute_steps(self, steps: List, guard: SafetyGuard) -> ExecutionResult:
+        _ = guard
         for index, step in enumerate(steps):
             if self.kill_switch.is_triggered():
                 logging.warning("Kill switch triggered. Execution halted.")
                 if self.verbose:
                     print("⚠ Kill switch activated. Stopping execution.")
-                return ExecutionResult(False, [])
+                return ExecutionResult(False, [], "Kill switch activated.")
 
             if step.requires_confirmation:
                 logging.info("Awaiting confirmation for action: %s", step.action)
@@ -66,7 +68,7 @@ class ExecutionEngine:
                 logging.error(error_msg)
                 if self.verbose:
                     print(f"  ✗ {error_msg}")
-                return ExecutionResult(False, [])
+                return ExecutionResult(False, [], error_msg)
 
         return ExecutionResult(True, [])
 
@@ -173,6 +175,28 @@ class ExecutionEngine:
                 return
             seconds = max(0.0, float(params.get("seconds", 0.5)))
             time.sleep(seconds / self.speed)
+        elif action == "autofill_login":
+            service = str(params.get("service", "")).strip()
+            if not service:
+                raise ValueError("Service is required for autofill_login action")
+            if self.dry_run:
+                return
+
+            from core.context.password_manager import get_password_manager
+
+            credential = get_password_manager().get_credential(service)
+            if not credential:
+                raise RuntimeError(
+                    f"No credentials found for '{service}' in the local password manager."
+                )
+            if not credential.username or not credential.password:
+                raise RuntimeError(
+                    f"Credential for '{service}' is incomplete (missing username or password)."
+                )
+
+            self.keyboard.type_text(credential.username, interval=self._scaled_typing_interval())
+            self.keyboard.press("tab")
+            self.keyboard.type_text(credential.password, interval=self._scaled_typing_interval())
         else:
             raise ValueError(f"Unknown action: {action}")
 

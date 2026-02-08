@@ -2,6 +2,7 @@
 
 import sys
 import os
+import pytest
 
 # Add the pylink directory to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -9,6 +10,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dotenv import load_dotenv
 
 load_dotenv()
+
+pytestmark = pytest.mark.skip(reason="Manual voice integration test; not suitable for automated pytest runs.")
 
 from core.context.session import SessionContext
 from core.executor.engine import ExecutionEngine

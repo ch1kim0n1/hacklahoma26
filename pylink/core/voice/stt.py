@@ -72,6 +72,7 @@ class SpeechToText:
         self._model_lock = threading.Lock()
         self._status_lock = threading.Lock()
         self._pyaudio = None
+        self._pyaudio_module = None
         self.last_error: Optional[str] = None
         self.cache_root = Path(
             os.getenv(
@@ -90,12 +91,56 @@ class SpeechToText:
             "error": "",
             "updated_at": time.time(),
         }
+        self._validate_runtime(require_microphone=_env_bool("PIXELINK_STT_REQUIRE_MIC", True))
 
         logging.info(
             "SpeechToText initialized with model=%s, device=%s",
             self.model_size,
             self.device,
         )
+
+    def _validate_runtime(self, require_microphone: bool = True) -> None:
+        try:
+            import pyaudio
+        except Exception as exc:
+            raise ValueError(
+                "PyAudio is unavailable. Install PyAudio/PortAudio for microphone input."
+            ) from exc
+
+        try:
+            from faster_whisper import WhisperModel  # noqa: F401
+        except Exception as exc:
+            raise ValueError(
+                "faster-whisper is unavailable. Install dependency: pip install faster-whisper"
+            ) from exc
+
+        self._pyaudio_module = pyaudio
+        if not require_microphone:
+            return
+
+        pa = None
+        try:
+            pa = pyaudio.PyAudio()
+            has_input = False
+            for index in range(pa.get_device_count()):
+                info = pa.get_device_info_by_index(index)
+                if int(info.get("maxInputChannels", 0)) > 0:
+                    has_input = True
+                    break
+            if not has_input:
+                raise ValueError("No microphone input device detected.")
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError(
+                f"Microphone backend initialization failed: {type(exc).__name__}: {exc}"
+            ) from exc
+        finally:
+            if pa is not None:
+                try:
+                    pa.terminate()
+                except Exception:
+                    pass
 
     @property
     def model(self):
@@ -309,9 +354,11 @@ class SpeechToText:
     def _get_pyaudio(self):
         """Lazy-load PyAudio instance."""
         if self._pyaudio is None:
-            import pyaudio
-
-            self._pyaudio = pyaudio.PyAudio()
+            pyaudio_module = self._pyaudio_module
+            if pyaudio_module is None:
+                import pyaudio as pyaudio_module
+                self._pyaudio_module = pyaudio_module
+            self._pyaudio = pyaudio_module.PyAudio()
         return self._pyaudio
 
     def listen(self, prompt_callback: Optional[Callable[[str], None]] = None) -> str:
@@ -365,12 +412,14 @@ class SpeechToText:
 
     def _record_audio(self) -> bytes:
         """Record audio from microphone until silence or max duration."""
-        import pyaudio
-
         pa = self._get_pyaudio()
+        pyaudio_module = self._pyaudio_module
+        if pyaudio_module is None:
+            import pyaudio as pyaudio_module
+            self._pyaudio_module = pyaudio_module
 
         stream = pa.open(
-            format=pyaudio.paInt16,
+            format=pyaudio_module.paInt16,
             channels=self.CHANNELS,
             rate=self.SAMPLE_RATE,
             input=True,
@@ -501,3 +550,10 @@ class SpeechToText:
         if self._pyaudio is not None:
             self._pyaudio.terminate()
             self._pyaudio = None
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}

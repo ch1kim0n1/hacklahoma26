@@ -21,9 +21,15 @@ const runtimeState = {
   backend: "offline",
   dryRun: false,
   speed: 1.0,
+  platform: {
+    os: process.platform,
+    support_tier: "experimental",
+    message: ""
+  },
   pendingConfirmation: false,
   pendingClarification: false,
   clarificationPrompt: "",
+  pendingAction: null,
   lastResult: null,
   voice: {
     requestedInput: true,
@@ -31,6 +37,13 @@ const runtimeState = {
     inputEnabled: false,
     outputEnabled: false,
     errors: {},
+    availability: {
+      requested_input: true,
+      requested_output: true,
+      input_enabled: false,
+      output_enabled: false,
+      errors: {}
+    },
     model: {
       model: "",
       state: "unavailable",
@@ -44,6 +57,9 @@ const runtimeState = {
   eyeControl: {
     active: false,
     available: false,
+    availabilityCode: "",
+    availabilityReason: "",
+    availabilityStage: "startup_soft",
     lastGaze: null,
     lastBlink: null,
     lastEar: null,
@@ -53,7 +69,8 @@ const runtimeState = {
     controlMode: "face",
     backend: null,
     previewActive: false,
-    lastError: null
+    lastError: null,
+    diagnostics: {}
   },
   permissionProfile: {
     open_app: true,
@@ -116,6 +133,9 @@ function normalizeVoiceState(payload) {
     inputEnabled: payload.inputEnabled ?? payload.input_enabled ?? runtimeState.voice.inputEnabled,
     outputEnabled: payload.outputEnabled ?? payload.output_enabled ?? runtimeState.voice.outputEnabled,
     errors: payload.errors && typeof payload.errors === "object" ? payload.errors : runtimeState.voice.errors,
+    availability: payload.availability && typeof payload.availability === "object"
+      ? payload.availability
+      : runtimeState.voice.availability,
     model: model || runtimeState.voice.model
   };
 }
@@ -127,6 +147,9 @@ function normalizeEyeState(payload) {
   return {
     active: Boolean(payload.active),
     available: Boolean(payload.available),
+    availabilityCode: payload.availability_code ?? payload.availabilityCode ?? "",
+    availabilityReason: payload.availability_reason ?? payload.availabilityReason ?? "",
+    availabilityStage: payload.availability_stage ?? payload.availabilityStage ?? "runtime",
     lastGaze: payload.last_gaze ?? null,
     lastBlink: payload.last_blink ?? null,
     lastEar: payload.last_ear ?? null,
@@ -136,12 +159,19 @@ function normalizeEyeState(payload) {
     controlMode: payload.control_mode ?? "face",
     backend: payload.backend ?? null,
     previewActive: Boolean(payload.preview_active),
-    lastError: payload.last_error ?? null
+    lastError: payload.last_error ?? null,
+    diagnostics: payload.diagnostics && typeof payload.diagnostics === "object" ? payload.diagnostics : {}
   };
 }
 
 function applyRuntimeResult(result) {
   runtimeState.lastResult = result;
+  if (result.platform && typeof result.platform === "object") {
+    runtimeState.platform = {
+      ...runtimeState.platform,
+      ...result.platform
+    };
+  }
   if (typeof result.pending_confirmation === "boolean") {
     runtimeState.pendingConfirmation = result.pending_confirmation;
   }
@@ -149,6 +179,9 @@ function applyRuntimeResult(result) {
     runtimeState.pendingClarification = result.pending_clarification;
   }
   runtimeState.clarificationPrompt = result.clarification_prompt || "";
+  if (Object.prototype.hasOwnProperty.call(result, "pending_action")) {
+    runtimeState.pendingAction = result.pending_action;
+  }
   const normalizedVoice = normalizeVoiceState(result.voice);
   if (normalizedVoice) {
     runtimeState.voice = {
@@ -169,6 +202,12 @@ function applyBridgeReadyPayload(payload) {
   runtimeState.backend = "online";
   runtimeState.dryRun = Boolean(payload.dry_run);
   runtimeState.speed = Number(payload.speed || 1.0);
+  if (payload.platform && typeof payload.platform === "object") {
+    runtimeState.platform = {
+      ...runtimeState.platform,
+      ...payload.platform
+    };
+  }
   const normalizedVoice = normalizeVoiceState(payload.voice);
   if (normalizedVoice) {
     runtimeState.voice = {

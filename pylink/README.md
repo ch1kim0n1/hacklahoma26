@@ -50,7 +50,7 @@ Dependencies:
 
 ### 3. Verify Installation
 ```bash
-python main.py
+python main.py --cli
 ```
 
 You should see:
@@ -71,7 +71,7 @@ PixelLink>
 
 Run the main CLI application:
 ```bash
-python main.py
+python main.py --cli
 ```
 
 **Example Commands:**
@@ -265,7 +265,7 @@ pylink/
 ### Testing
 Currently no automated tests. Manual testing workflow:
 ```bash
-python main.py
+python main.py --cli
 # Test each intent manually
 ```
 

@@ -90,6 +90,31 @@ def test_start_eye_loop_returns_false_when_mediapipe_face_mesh_missing(monkeypat
     assert eye_control._eye_thread is None
 
 
+def test_eye_control_diagnostics_provide_reason_codes(monkeypatch):
+    """Diagnostics should explain dependency failures without probing camera."""
+    from core.eye import eye_control
+
+    class FakeCV2:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def VideoCapture(self, *_):
+            self.calls += 1
+            raise AssertionError("VideoCapture should not be touched for dependency failures")
+
+    fake_cv2 = FakeCV2()
+    monkeypatch.setattr(eye_control, "cv2", fake_cv2)
+    monkeypatch.setattr(eye_control, "mp", None)
+
+    diagnostics = eye_control.get_eye_control_diagnostics(
+        check_camera=False,
+        ensure_model=False,
+    )
+    assert diagnostics["available"] is False
+    assert diagnostics["reason_code"] == "missing_mediapipe"
+    assert fake_cv2.calls == 0
+
+
 def test_resolve_blink_action_mapping():
     """Blink action mapping: double blink clicks, single blink confirms pending actions."""
     from desktop_bridge import _resolve_blink_action

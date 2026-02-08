@@ -15,7 +15,7 @@ from core.context.session import SessionContext
 from core.safety.guard import SafetyGuard
 
 
-def test_mcp_integration():
+def test_mcp_integration() -> None:
     """Test that MCP tools are loaded and intents are parsed correctly."""
     
     print("=" * 60)
@@ -35,8 +35,9 @@ def test_mcp_integration():
         for name in tool_map.keys():
             print(f"  - {name}")
     except Exception as e:
-        print(f"\n✗ Failed to load MCP plugins: {e}")
-        return False
+        raise AssertionError(f"Failed to load MCP plugins: {e}") from e
+
+    assert len(mcp_tools) > 0, "Expected at least one MCP tool to be loaded"
     
     # Test intent parsing
     print("\n" + "-" * 60)
@@ -85,9 +86,8 @@ def test_mcp_integration():
     print("\n" + "=" * 60)
     print("✓ All tests completed successfully!")
     print("=" * 60)
-    return True
 
 
 if __name__ == "__main__":
-    success = test_mcp_integration()
-    sys.exit(0 if success else 1)
+    test_mcp_integration()
+    sys.exit(0)

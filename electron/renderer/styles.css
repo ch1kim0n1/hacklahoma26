@@ -38,7 +38,7 @@ body {
   border: 1px solid var(--border);
   border-radius: 14px;
   display: grid;
-  grid-template-rows: auto auto auto 1fr auto;
+  grid-template-rows: auto auto auto auto 1fr auto;
   overflow: hidden;
 }
 
@@ -146,8 +146,44 @@ body {
   transition: width 120ms ease;
 }
 
-.hidden {
-  display: none !important;
+.runtime-hints {
+  display: grid;
+  gap: 4px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  background: #f8fafc;
+}
+
+.runtime-mode-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.runtime-badge {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 0.7rem;
+  color: var(--muted);
+  background: #fff;
+}
+
+.runtime-badge.warn {
+  border-color: #e5b45c;
+  color: #8b5a07;
+  background: #fff7e8;
+}
+
+.runtime-badge.active {
+  border-color: #8da7de;
+  color: #12357f;
+  background: #edf3ff;
+}
+
+.runtime-hint-text {
+  font-size: 0.74rem;
+  color: var(--muted);
 }
 
 .log-area {
@@ -236,6 +272,19 @@ body {
   color: #8f3f20;
 }
 
+.eye-control-btn {
+  background: #fff;
+  color: var(--accent);
+  border: 1px solid #9cb1e6;
+  min-width: 56px;
+}
+
+.eye-control-btn.eye-active {
+  background: #d4e4f7;
+  border-color: var(--accent);
+  color: #0f2d6b;
+}
+
 .console.reduced-load .console-header h1 {
   font-size: 1rem;
 }
@@ -255,7 +304,7 @@ body {
 }
 
 .console.minimal-ui {
-  grid-template-rows: auto auto auto auto;
+  grid-template-rows: auto auto auto auto auto;
 }
 
 .console.minimal-ui .log-area {
@@ -269,17 +318,6 @@ body {
 .console.minimal-ui .preferences {
   padding-top: 5px;
   padding-bottom: 5px;
-.eye-control-btn {
-  background: #fff;
-  color: var(--accent);
-  border: 1px solid #9cb1e6;
-  min-width: 56px;
-}
-
-.eye-control-btn.eye-active {
-  background: #d4e4f7;
-  border-color: var(--accent);
-  color: #0f2d6b;
 }
 
 .eye-preview {
@@ -325,4 +363,16 @@ body {
   line-height: 1.4;
   color: var(--text);
   white-space: pre-line;
+}
+
+@media (max-width: 700px) {
+  .console {
+    height: calc(100vh - 20px);
+  }
+
+  .eye-preview {
+    right: 10px;
+    bottom: 10px;
+    width: min(240px, calc(100vw - 20px));
+  }
 }

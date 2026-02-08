@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import logging
 import os
+import shutil
 import threading
 from typing import Optional
 
@@ -50,8 +51,41 @@ class TextToSpeech:
         self._client = None
         self._is_speaking = False
         self._speak_lock = threading.Lock()
+        self._validate_runtime()
 
         logging.info("TextToSpeech initialized with voice_id=%s, model=%s", self.voice_id, self.model)
+
+    def _validate_runtime(self) -> None:
+        try:
+            from elevenlabs.client import ElevenLabs  # noqa: F401
+        except Exception as exc:
+            raise ValueError(
+                "ElevenLabs SDK not available. Install dependency: pip install elevenlabs"
+            ) from exc
+
+        import platform
+
+        system = platform.system()
+        if system == "Darwin":
+            if not shutil.which("afplay"):
+                raise ValueError("macOS audio player 'afplay' is unavailable.")
+            return
+        if system == "Windows":
+            if not shutil.which("powershell"):
+                raise ValueError("PowerShell is required for Windows audio playback.")
+            return
+        # Linux and others: require one of known players or pydub runtime.
+        players = ("mpv", "ffplay", "aplay")
+        if any(shutil.which(player) for player in players):
+            return
+        try:
+            from pydub import AudioSegment  # noqa: F401
+            from pydub.playback import play  # noqa: F401
+            return
+        except Exception as exc:
+            raise ValueError(
+                "No audio playback backend found. Install mpv/ffplay/aplay or pydub."
+            ) from exc
 
     @property
     def client(self):
@@ -153,12 +187,16 @@ class TextToSpeech:
                 )
             else:  # Linux
                 # Try common audio players
+                played = False
                 for player in ["mpv", "ffplay", "aplay"]:
                     try:
                         subprocess.run([player, temp_path], check=True, capture_output=True)
+                        played = True
                         break
                     except FileNotFoundError:
                         continue
+                if not played:
+                    raise RuntimeError("No compatible system audio player found (mpv/ffplay/aplay).")
         finally:
             os.unlink(temp_path)
 

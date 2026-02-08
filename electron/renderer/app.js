@@ -33,7 +33,10 @@ const elements = {
   eyePreviewPanel: document.getElementById("eyePreviewPanel"),
   eyePreviewVideo: document.getElementById("eyePreviewVideo"),
   eyePreviewStats: document.getElementById("eyePreviewStats"),
-  eyePreviewState: document.getElementById("eyePreviewState")
+  eyePreviewState: document.getElementById("eyePreviewState"),
+  runtimeHints: document.getElementById("runtimeHints"),
+  runtimeModeBadges: document.getElementById("runtimeModeBadges"),
+  runtimeHintText: document.getElementById("runtimeHintText")
 };
 
 function loadPreferences() {
@@ -155,6 +158,7 @@ function updateRuntime(runtime) {
   updateVoiceButtonState();
   updateEyeControlButton();
   updateEyePreview(runtime);
+  renderRuntimeHints(runtime);
 }
 
 async function startEyePreviewCamera() {
@@ -222,6 +226,7 @@ function updateEyePreview(runtime) {
     : "n/a";
   const ear = typeof eye.lastEar === "number" ? eye.lastEar.toFixed(3) : "n/a";
   const previewStatus = eye.previewActive ? "native ok" : "native off";
+  const eyeError = eye.lastError ? `\nError: ${eye.lastError}` : "";
   elements.eyePreviewStats.textContent =
     `Blink: ${eye.lastBlink || "-"}\n` +
     `EAR: ${ear}\n` +
@@ -229,7 +234,8 @@ function updateEyePreview(runtime) {
     `Norm: ${gazeNorm}\n` +
     `Iris: ${eye.irisTracking ? "on" : "off"}\n` +
     `Mode: ${eye.controlMode || "face"}\n` +
-    `Backend: ${eye.backend || "-"} (${previewStatus})`;
+    `Backend: ${eye.backend || "-"} (${previewStatus})` +
+    eyeError;
 }
 
 function updateVoiceButtonState() {
@@ -266,7 +272,8 @@ function updateEyeControlButton() {
 
   if (!eyeAvailable) {
     elements.eyeControlBtn.textContent = "Eye Off";
-    elements.eyeControlBtn.title = "Eye control unavailable (camera or dependencies missing)";
+    const reason = state.runtime?.eyeControl?.availabilityReason || state.runtime?.eyeControl?.lastError || "camera or dependencies missing";
+    elements.eyeControlBtn.title = `Eye control unavailable: ${reason}`;
   } else if (eyeActive) {
     elements.eyeControlBtn.textContent = "Eye On";
     elements.eyeControlBtn.title = "Eye and blink control active. Click to turn off.";
@@ -274,6 +281,75 @@ function updateEyeControlButton() {
     elements.eyeControlBtn.textContent = "Eye";
     elements.eyeControlBtn.title = "Click to enable eye and blink control (gaze moves cursor, double blink = click)";
   }
+}
+
+function renderRuntimeHints(runtime) {
+  if (!elements.runtimeHints || !elements.runtimeModeBadges || !elements.runtimeHintText) {
+    return;
+  }
+  const badges = [];
+  const hints = [];
+  const eye = runtime?.eyeControl || {};
+  const voice = runtime?.voice || {};
+  const platformInfo = runtime?.platform || {};
+  const pendingAction = runtime?.pendingAction || runtime?.pending_action || null;
+  const pendingConfirmation = Boolean(runtime?.pendingConfirmation || runtime?.pending_confirmation);
+  const pendingClarification = Boolean(runtime?.pendingClarification || runtime?.pending_clarification);
+
+  if (runtime?.backend !== "online") {
+    elements.runtimeHints.classList.add("hidden");
+    return;
+  }
+
+  if (platformInfo.support_tier && platformInfo.support_tier !== "stable") {
+    badges.push({ label: "Platform: experimental", variant: "warn" });
+    if (platformInfo.message) {
+      hints.push(platformInfo.message);
+    }
+  } else {
+    badges.push({ label: "Platform: stable", variant: "active" });
+  }
+
+  if (voice.inputEnabled) {
+    badges.push({ label: "Voice Input", variant: "active" });
+  }
+  if (voice.outputEnabled) {
+    badges.push({ label: "Voice Output", variant: "active" });
+  }
+  if (eye.active) {
+    badges.push({ label: "Eye Control", variant: "active" });
+  }
+  if (pendingClarification) {
+    badges.push({ label: "Need Clarification", variant: "warn" });
+  } else if (pendingConfirmation) {
+    badges.push({ label: "Need Confirmation", variant: "warn" });
+  }
+
+  if (pendingAction?.action === "autofill_login") {
+    const service = pendingAction?.params?.service || "selected service";
+    hints.push(`Credential autofill pending for ${service}. Credentials stay local and are never displayed.`);
+  } else if (pendingConfirmation && eye.active) {
+    hints.push("Eye shortcut: single blink confirms; double blink cancels.");
+  }
+
+  if (!eye.available && eye.availabilityReason) {
+    hints.push(`Eye control unavailable: ${eye.availabilityReason}`);
+  }
+  if (voice.errors && Object.keys(voice.errors).length > 0) {
+    hints.push("Voice availability is degraded. Check voice diagnostics in the log feed.");
+  }
+
+  const filteredHints = Array.from(new Set(hints.filter(Boolean)));
+  const shouldShow = badges.length > 0 || filteredHints.length > 0;
+  elements.runtimeHints.classList.toggle("hidden", !shouldShow);
+  if (!shouldShow) {
+    return;
+  }
+
+  elements.runtimeModeBadges.innerHTML = badges
+    .map((item) => `<span class=\"runtime-badge ${item.variant || ""}\">${item.label}</span>`)
+    .join("");
+  elements.runtimeHintText.textContent = filteredHints.slice(0, 2).join(" ");
 }
 
 function classifyLevel(result) {
@@ -409,11 +485,19 @@ function bindEvents() {
     const eyeActive = Boolean(state.runtime?.eyeControl?.active);
     try {
       if (eyeActive) {
-        await window.pixelink.stopEyeControl();
+        const result = await window.pixelink.stopEyeControl();
+        if (result?.status === "error") {
+          logResult(result);
+          return;
+        }
         appendLog("info", "Eye Control", "Eye control turned off.");
       } else {
         state.eyePreviewUnsupported = false;
-        await window.pixelink.startEyeControl();
+        const result = await window.pixelink.startEyeControl();
+        if (result?.status === "error") {
+          logResult(result);
+          return;
+        }
         appendLog("info", "Eye Control", "Eye control turned on. Advanced gaze tracking enabled; double blink = click.");
       }
     } catch (error) {
@@ -464,9 +548,17 @@ async function boot() {
   if (!snapshot.runtime?.voice?.outputEnabled && !state.preferences.visualOnly) {
     appendLog("warning", "Voice Output", "Voice output is not available. Check voice config/API key.");
   }
+  if (snapshot.runtime?.voice?.requestedInput && !snapshot.runtime?.voice?.inputEnabled) {
+    const sttError = snapshot.runtime?.voice?.errors?.stt || "Speech input is unavailable in this environment.";
+    appendLog("warning", "Voice Input", sttError);
+  }
+  if (snapshot.runtime?.platform?.support_tier && snapshot.runtime.platform.support_tier !== "stable") {
+    appendLog("warning", "Platform", snapshot.runtime?.platform?.message || "Running on an experimental platform.");
+  }
   const backendOnline = snapshot.runtime?.backend === "online";
   if (backendOnline && !snapshot.runtime?.eyeControl?.available) {
-    appendLog("info", "Eye Control", "Eye control is unavailable (install opencv-python and mediapipe, and allow camera access).");
+    const reason = snapshot.runtime?.eyeControl?.availabilityReason || "install opencv-python and mediapipe, and allow camera access";
+    appendLog("info", "Eye Control", `Eye control is unavailable (${reason}).`);
   }
 
   window.pixelink.onRuntimeUpdate((runtime) => {

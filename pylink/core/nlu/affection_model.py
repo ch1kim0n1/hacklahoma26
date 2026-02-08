@@ -611,6 +611,20 @@ class AffectionNLUModel:
             0.0, 1.0,
         )
 
+        hopeless_hits = sum(1 for phrase in HOPELESSNESS_TERMS if phrase in lowered)
+        severe_distress = bool(
+            re.search(
+                r"\\b(i\\s+want\\s+to\\s+give\\s+up|i\\s+am\\s+done|can't\\s+go\\s+on|end\\s+it)\\b",
+                lowered,
+            )
+        )
+        if hopeless_hits:
+            cs.burnout_risk = _bounded(cs.burnout_risk + min(0.55, hopeless_hits * 0.2), 0.0, 1.0)
+            cs.cognitive_load = _bounded(cs.cognitive_load + min(0.45, hopeless_hits * 0.12), 0.0, 1.0)
+        if severe_distress:
+            cs.burnout_risk = max(cs.burnout_risk, 0.72)
+            cs.cognitive_load = max(cs.cognitive_load, 0.5)
+
         # Energy level estimation (inverse of exhaustion + burnout)
         exhaustion_hits = sum(1 for phrase in BURNOUT_SIGNALS["exhaustion"] if phrase in lowered)
         cs.energy_level = _bounded(0.7 - exhaustion_hits * 0.2 - cs.burnout_risk * 0.3, 0.0, 1.0)
@@ -1199,14 +1213,15 @@ class AffectionNLUModel:
 
         # Update intervention with schedule context
         if assessment.intervention.get("priority") in ("critical", "high"):
+            intervention_suggestions = assessment.intervention.setdefault("suggestions", [])
             if tasks_today > 3 and cs.energy_level < 0.5:
-                assessment.intervention["suggestions"].insert(
-                    0, f"You have {tasks_today} tasks today but low energy. Want me to move some to tomorrow?"
-                )
+                message = f"You have {tasks_today} tasks today but low energy. Want me to move some to tomorrow?"
+                if message not in intervention_suggestions:
+                    intervention_suggestions.insert(0, message)
             if schedule_density > 0.7:
-                assessment.intervention["suggestions"].append(
-                    "Your calendar is packed. Consider declining or rescheduling a meeting."
-                )
+                message = "Your calendar is packed. Consider declining or rescheduling a meeting."
+                if message not in intervention_suggestions:
+                    intervention_suggestions.append(message)
 
         return assessment
 

@@ -194,6 +194,13 @@ PixelLink is **local-first** by design.
 * On-device LLM
 * Cross-platform UI framework
 
+## Platform Support Reality
+
+PixelLink currently targets **macOS first** for live reliability.
+
+* `stable`: macOS
+* `experimental`: Windows, Linux (core flows may work, but automation/focus behavior varies by platform)
+
 ---
 
 ## Desktop App (Electron)
