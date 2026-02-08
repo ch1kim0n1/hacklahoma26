@@ -7,6 +7,9 @@ contextBridge.exposeInMainWorld("pixelink", {
   confirm: (source = "text") => ipcRenderer.invoke("runtime:confirm", { source }),
   cancel: (source = "text") => ipcRenderer.invoke("runtime:cancel", { source }),
   updatePreferences: (preferences) => ipcRenderer.invoke("runtime:update-preferences", preferences),
+  startEyeControl: () => ipcRenderer.invoke("eye:start"),
+  stopEyeControl: () => ipcRenderer.invoke("eye:stop"),
+  getEyeControlState: () => ipcRenderer.invoke("eye:get-state"),
   openMain: () => ipcRenderer.invoke("ui:open-main"),
   hideMain: () => ipcRenderer.invoke("ui:hide-main"),
   onRuntimeUpdate: (callback) => {

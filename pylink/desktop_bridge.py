@@ -8,12 +8,28 @@ import threading
 from pathlib import Path
 from typing import Any
 
+import pyautogui
+
 from core.runtime.orchestrator import DEFAULT_PERMISSION_PROFILE, PixelLinkRuntime
 
 # Add parent directory to path to import bridge
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from bridge import load_plugins
+
+# Optional eye control (opencv + mediapipe)
+try:
+    from core.eye.eye_control import (
+        BlinkType,
+        is_eye_control_available,
+        start_eye_loop as _eye_start,
+        stop_eye_loop as _eye_stop,
+    )
+except Exception:
+    _eye_start = None  # type: ignore[assignment]
+    _eye_stop = None  # type: ignore[assignment]
+    BlinkType = None  # type: ignore[assignment]
+    is_eye_control_available = lambda: False  # type: ignore[assignment]
 
 
 _WRITE_LOCK = threading.Lock()
@@ -42,6 +58,19 @@ def _as_bool(value: str | None, default: bool = False) -> bool:
     if value is None:
         return default
     return value.lower() in {"1", "true", "yes", "on"}
+
+
+def _resolve_blink_action(blink_value: str, pending: bool) -> str | None:
+    """Map blink events to high-level actions."""
+    if pending:
+        if blink_value == "single":
+            return "confirm"
+        if blink_value == "double":
+            return "cancel"
+        return None
+    if blink_value == "double":
+        return "left_click"
+    return None
 
 
 def _runtime_state(runtime: PixelLinkRuntime) -> dict[str, Any]:
@@ -271,6 +300,103 @@ def main() -> int:
             }
         )
 
+    # Eye control state (updated by eye loop callbacks)
+    eye_control_state: dict[str, Any] = {
+        "active": False,
+        "available": is_eye_control_available() if callable(is_eye_control_available) else False,
+        "last_gaze": None,
+        "last_blink": None,
+        "last_ear": None,
+        "blink_state": "open",
+        "gaze_norm": None,
+        "iris_tracking": False,
+        "control_mode": "face",
+        "backend": None,
+        "preview_active": False,
+        "last_error": None,
+    }
+
+    def _eye_payload() -> dict[str, Any]:
+        return {
+            "active": eye_control_state.get("active", False),
+            "available": eye_control_state.get("available", False),
+            "last_gaze": eye_control_state.get("last_gaze"),
+            "last_blink": eye_control_state.get("last_blink"),
+            "last_ear": eye_control_state.get("last_ear"),
+            "blink_state": eye_control_state.get("blink_state"),
+            "gaze_norm": eye_control_state.get("gaze_norm"),
+            "iris_tracking": eye_control_state.get("iris_tracking"),
+            "control_mode": eye_control_state.get("control_mode"),
+            "backend": eye_control_state.get("backend"),
+            "preview_active": eye_control_state.get("preview_active"),
+            "last_error": eye_control_state.get("last_error"),
+        }
+
+    def _get_screen_size() -> tuple[int, int]:
+        try:
+            w, h = pyautogui.size()
+            return (int(w), int(h))
+        except Exception:
+            return (1920, 1080)
+
+    def _on_gaze(x: int, y: int) -> None:
+        eye_control_state["last_gaze"] = (x, y)
+        try:
+            runtime.move_cursor(x, y)
+            eye_control_state["last_error"] = None
+        except Exception as exc:
+            eye_control_state["last_error"] = str(exc)
+
+    def _on_metrics(metrics: dict[str, Any]) -> None:
+        eye_control_state["last_ear"] = metrics.get("ear")
+        eye_control_state["blink_state"] = metrics.get("blink_state", "open")
+        eye_control_state["gaze_norm"] = metrics.get("gaze_norm")
+        eye_control_state["iris_tracking"] = bool(metrics.get("iris_tracking", False))
+        eye_control_state["control_mode"] = metrics.get("control_mode", "face")
+        eye_control_state["backend"] = metrics.get("backend")
+        eye_control_state["preview_active"] = bool(metrics.get("preview_active", False))
+        if metrics.get("last_gaze") is not None:
+            eye_control_state["last_gaze"] = metrics.get("last_gaze")
+        if metrics.get("last_blink") is not None:
+            eye_control_state["last_blink"] = metrics.get("last_blink")
+
+    def _on_blink(blink_type: Any) -> None:
+        bval = blink_type.value if hasattr(blink_type, "value") else str(blink_type)
+        eye_control_state["last_blink"] = bval
+        pending = bool(runtime.session.pending_steps or runtime.session.pending_clarification)
+        action = _resolve_blink_action(bval, pending)
+        if action == "confirm":
+            runtime.handle_input("confirm", source="blink")
+        elif action == "cancel":
+            runtime.handle_input("cancel", source="blink")
+        elif action == "left_click":
+            try:
+                cx, cy = pyautogui.position()
+                runtime.executor.mouse.click(int(cx), int(cy), button="left")
+            except Exception:
+                pass
+
+    def _eye_control_start() -> bool:
+        if not _eye_start or not (eye_control_state.get("available")):
+            return False
+        if eye_control_state.get("active"):
+            return True
+        ok = _eye_start(
+            _on_gaze,
+            _on_blink,
+            _get_screen_size,
+            None,
+            _on_metrics,
+        )
+        eye_control_state["active"] = ok
+        return ok
+
+    def _eye_control_stop() -> None:
+        if _eye_stop:
+            _eye_stop()
+        eye_control_state["active"] = False
+        eye_control_state["preview_active"] = False
+
     def _voice_state() -> dict[str, Any]:
         return {
             "requested_input": requested_voice_input,
@@ -318,6 +444,7 @@ def main() -> int:
             "dry_run": dry_run,
             "speed": speed,
             "voice": _voice_state(),
+            "eye_control": _eye_payload(),
         }
     )
 
@@ -508,10 +635,66 @@ def main() -> int:
                 continue
 
             if action == "get_state":
+                _write_json(
+                    {
+                        "status": "state",
+                        "pending_confirmation": bool(runtime.session.pending_steps),
+                        "pending_clarification": bool(runtime.session.pending_clarification),
+                        "clarification_prompt": (runtime.session.pending_clarification or {}).get("prompt", ""),
+                        "last_app": runtime.session.last_app,
+                        "history_count": len(runtime.session.history),
+                        "affection": runtime.session.last_affection,
+                    }
+                )
                 response = {
                     "status": "state",
                     **_runtime_state(runtime),
                     "voice": _voice_state(),
+                    "eye_control": _eye_payload(),
+                }
+                if request_id is not None:
+                    response["request_id"] = request_id
+                _write_json(response)
+                continue
+
+            if action == "eye_control_start":
+                if not eye_control_state.get("available"):
+                    _write_json(
+                        _build_error(
+                            message="Eye control unavailable (camera or dependencies missing).",
+                            code="EYE_CONTROL_UNAVAILABLE",
+                            request_id=request_id,
+                            extra={"eye_control": _eye_payload()},
+                        )
+                    )
+                    continue
+                ok = _eye_control_start()
+                response = {
+                    "status": "ok" if ok else "error",
+                    "message": "Eye control started." if ok else "Failed to start eye control.",
+                    "eye_control": _eye_payload(),
+                }
+                if request_id is not None:
+                    response["request_id"] = request_id
+                _write_json(response)
+                continue
+
+            if action == "eye_control_stop":
+                _eye_control_stop()
+                response = {
+                    "status": "ok",
+                    "message": "Eye control stopped.",
+                    "eye_control": _eye_payload(),
+                }
+                if request_id is not None:
+                    response["request_id"] = request_id
+                _write_json(response)
+                continue
+
+            if action == "eye_control_get_state":
+                response = {
+                    "status": "state",
+                    "eye_control": _eye_payload(),
                 }
                 if request_id is not None:
                     response["request_id"] = request_id
@@ -533,6 +716,7 @@ def main() -> int:
                 )
             )
     finally:
+        _eye_control_stop()
         runtime.close()
         if voice_controller:
             try:

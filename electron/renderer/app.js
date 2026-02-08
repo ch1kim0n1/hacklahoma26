@@ -21,14 +21,19 @@ const elements = {
   commandForm: document.getElementById("commandForm"),
   commandInput: document.getElementById("commandInput"),
   voiceBtn: document.getElementById("voiceBtn"),
-  hideBtn: document.getElementById("hideBtn"),
   reducedLoadToggle: document.getElementById("reducedLoadToggle"),
   minimalUiToggle: document.getElementById("minimalUiToggle"),
   visualOnlyToggle: document.getElementById("visualOnlyToggle"),
   voiceModelStatus: document.getElementById("voiceModelStatus"),
   voiceModelMessage: document.getElementById("voiceModelMessage"),
   voiceModelPercent: document.getElementById("voiceModelPercent"),
-  voiceModelProgress: document.getElementById("voiceModelProgress")
+  voiceModelProgress: document.getElementById("voiceModelProgress"),
+  eyeControlBtn: document.getElementById("eyeControlBtn"),
+  hideBtn: document.getElementById("hideBtn"),
+  eyePreviewPanel: document.getElementById("eyePreviewPanel"),
+  eyePreviewVideo: document.getElementById("eyePreviewVideo"),
+  eyePreviewStats: document.getElementById("eyePreviewStats"),
+  eyePreviewState: document.getElementById("eyePreviewState")
 };
 
 function loadPreferences() {
@@ -148,6 +153,83 @@ function updateRuntime(runtime) {
   setStatus(runtime);
   updateVoiceModelStatus(runtime?.voice?.model);
   updateVoiceButtonState();
+  updateEyeControlButton();
+  updateEyePreview(runtime);
+}
+
+async function startEyePreviewCamera() {
+  if (state.eyePreviewStream || !elements.eyePreviewVideo) {
+    return;
+  }
+  if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== "function") {
+    if (!state.eyePreviewUnsupported) {
+      appendLog("warning", "Eye Preview", "Camera preview API unavailable in this runtime.");
+      state.eyePreviewUnsupported = true;
+    }
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: "user",
+        width: { ideal: 320 },
+        height: { ideal: 240 }
+      },
+      audio: false
+    });
+    state.eyePreviewStream = stream;
+    elements.eyePreviewVideo.srcObject = stream;
+  } catch (error) {
+    if (!state.eyePreviewUnsupported) {
+      appendLog("warning", "Eye Preview", `Camera preview unavailable: ${String(error.message || error)}`);
+      state.eyePreviewUnsupported = true;
+    }
+  }
+}
+
+function stopEyePreviewCamera() {
+  if (!state.eyePreviewStream) {
+    return;
+  }
+  state.eyePreviewStream.getTracks().forEach((track) => track.stop());
+  state.eyePreviewStream = null;
+  if (elements.eyePreviewVideo) {
+    elements.eyePreviewVideo.srcObject = null;
+  }
+}
+
+function updateEyePreview(runtime) {
+  if (!elements.eyePreviewPanel || !elements.eyePreviewStats || !elements.eyePreviewState) {
+    return;
+  }
+  const eye = runtime?.eyeControl || {};
+  const eyeActive = Boolean(eye.active);
+  if (!eyeActive) {
+    elements.eyePreviewPanel.classList.add("hidden");
+    elements.eyePreviewState.textContent = "idle";
+    elements.eyePreviewStats.textContent = "Waiting for eye control...";
+    stopEyePreviewCamera();
+    return;
+  }
+
+  elements.eyePreviewPanel.classList.remove("hidden");
+  elements.eyePreviewState.textContent = eye.blinkState || "tracking";
+  void startEyePreviewCamera();
+
+  const gaze = Array.isArray(eye.lastGaze) ? eye.lastGaze.join(", ") : "n/a";
+  const gazeNorm = Array.isArray(eye.gazeNorm)
+    ? `${Number(eye.gazeNorm[0]).toFixed(2)}, ${Number(eye.gazeNorm[1]).toFixed(2)}`
+    : "n/a";
+  const ear = typeof eye.lastEar === "number" ? eye.lastEar.toFixed(3) : "n/a";
+  const previewStatus = eye.previewActive ? "native ok" : "native off";
+  elements.eyePreviewStats.textContent =
+    `Blink: ${eye.lastBlink || "-"}\n` +
+    `EAR: ${ear}\n` +
+    `Gaze: ${gaze}\n` +
+    `Norm: ${gazeNorm}\n` +
+    `Iris: ${eye.irisTracking ? "on" : "off"}\n` +
+    `Mode: ${eye.controlMode || "face"}\n` +
+    `Backend: ${eye.backend || "-"} (${previewStatus})`;
 }
 
 function updateVoiceButtonState() {
@@ -168,6 +250,29 @@ function updateVoiceButtonState() {
     elements.voiceBtn.textContent = "Voice Off";
   } else {
     elements.voiceBtn.textContent = "Voice";
+  }
+}
+
+function updateEyeControlButton() {
+  if (!elements.eyeControlBtn) {
+    return;
+  }
+  const backendOnline = state.runtime?.backend === "online";
+  const eyeAvailable = Boolean(state.runtime?.eyeControl?.available);
+  const eyeActive = Boolean(state.runtime?.eyeControl?.active);
+
+  elements.eyeControlBtn.disabled = !backendOnline || !eyeAvailable;
+  elements.eyeControlBtn.classList.toggle("eye-active", eyeActive);
+
+  if (!eyeAvailable) {
+    elements.eyeControlBtn.textContent = "Eye Off";
+    elements.eyeControlBtn.title = "Eye control unavailable (camera or dependencies missing)";
+  } else if (eyeActive) {
+    elements.eyeControlBtn.textContent = "Eye On";
+    elements.eyeControlBtn.title = "Eye and blink control active. Click to turn off.";
+  } else {
+    elements.eyeControlBtn.textContent = "Eye";
+    elements.eyeControlBtn.title = "Click to enable eye and blink control (gaze moves cursor, double blink = click)";
   }
 }
 
@@ -274,6 +379,23 @@ async function syncVoicePreferences() {
 }
 
 function bindEvents() {
+  document.addEventListener("keydown", async (event) => {
+    if (event.key !== "Escape") {
+      return;
+    }
+    const eyeActive = Boolean(state.runtime?.eyeControl?.active);
+    if (!eyeActive) {
+      return;
+    }
+    event.preventDefault();
+    try {
+      await window.pixelink.stopEyeControl();
+      appendLog("info", "Eye Control", "Eye control turned off (Esc).");
+    } catch (error) {
+      appendLog("error", "Eye Control", `Esc stop failed: ${String(error.message || error)}`);
+    }
+  });
+
   elements.commandForm.addEventListener("submit", (event) => {
     event.preventDefault();
     submitCommand(elements.commandInput.value);
@@ -281,6 +403,22 @@ function bindEvents() {
 
   elements.voiceBtn.addEventListener("click", async () => {
     await submitVoiceCommand();
+  });
+
+  elements.eyeControlBtn.addEventListener("click", async () => {
+    const eyeActive = Boolean(state.runtime?.eyeControl?.active);
+    try {
+      if (eyeActive) {
+        await window.pixelink.stopEyeControl();
+        appendLog("info", "Eye Control", "Eye control turned off.");
+      } else {
+        state.eyePreviewUnsupported = false;
+        await window.pixelink.startEyeControl();
+        appendLog("info", "Eye Control", "Eye control turned on. Advanced gaze tracking enabled; double blink = click.");
+      }
+    } catch (error) {
+      appendLog("error", "Eye Control", String(error.message || error));
+    }
   });
 
   elements.hideBtn.addEventListener("click", async () => {
@@ -326,6 +464,10 @@ async function boot() {
   if (!snapshot.runtime?.voice?.outputEnabled && !state.preferences.visualOnly) {
     appendLog("warning", "Voice Output", "Voice output is not available. Check voice config/API key.");
   }
+  const backendOnline = snapshot.runtime?.backend === "online";
+  if (backendOnline && !snapshot.runtime?.eyeControl?.available) {
+    appendLog("info", "Eye Control", "Eye control is unavailable (install opencv-python and mediapipe, and allow camera access).");
+  }
 
   window.pixelink.onRuntimeUpdate((runtime) => {
     updateRuntime(runtime);
@@ -357,4 +499,8 @@ async function boot() {
 
 boot().catch((error) => {
   appendLog("error", "Fatal", String(error.message || error));
+});
+
+window.addEventListener("beforeunload", () => {
+  stopEyePreviewCamera();
 });

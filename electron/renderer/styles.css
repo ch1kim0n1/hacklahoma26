@@ -28,6 +28,10 @@ body {
   padding: 10px;
 }
 
+.hidden {
+  display: none !important;
+}
+
 .console {
   height: calc(100vh - 20px);
   background: var(--panel);
@@ -188,7 +192,7 @@ body {
   border-top: 1px solid var(--border);
   padding: 8px;
   display: grid;
-  grid-template-columns: 1fr auto auto;
+  grid-template-columns: 1fr auto auto auto;
   gap: 8px;
 }
 
@@ -265,4 +269,60 @@ body {
 .console.minimal-ui .preferences {
   padding-top: 5px;
   padding-bottom: 5px;
+.eye-control-btn {
+  background: #fff;
+  color: var(--accent);
+  border: 1px solid #9cb1e6;
+  min-width: 56px;
+}
+
+.eye-control-btn.eye-active {
+  background: #d4e4f7;
+  border-color: var(--accent);
+  color: #0f2d6b;
+}
+
+.eye-preview {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  width: 260px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 8px 22px rgba(15, 35, 71, 0.16);
+  overflow: hidden;
+  z-index: 99;
+}
+
+.eye-preview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.78rem;
+}
+
+#eyePreviewState {
+  color: var(--muted);
+  font-size: 0.74rem;
+  text-transform: lowercase;
+}
+
+#eyePreviewVideo {
+  display: block;
+  width: 100%;
+  height: 148px;
+  object-fit: cover;
+  background: #0f172a;
+}
+
+.eye-preview-stats {
+  padding: 8px 10px;
+  font-size: 0.74rem;
+  line-height: 1.4;
+  color: var(--text);
+  white-space: pre-line;
 }

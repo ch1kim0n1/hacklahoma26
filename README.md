@@ -113,9 +113,33 @@ User Input (Text / Voice / Face / Phone)
 
 * Text (usually via SST since people with no hands cant type)
 * Voice
+* **Eye and blink control** (webcam-based gaze + blink)
 * Facial gestures
 * Head movement
 * Mobile input (POST MVP)
+
+### Eye and Blink Control
+
+PixelLink can use a webcam for **gaze** and **blink** input (inspired by Project-VISION):
+
+* **Gaze**: Where you look drives the system mouse cursor (“look to point”).
+* **Single blink**: Confirm a pending action.
+* **Double blink**: Cancel a pending action, or left-click at the current cursor when no action is pending.
+* **Live preview window**: Shows camera feed with eye landmarks, EAR/blink status, and gaze telemetry.
+* **Desktop mini preview panel**: In-app camera tile with live eye sensors so you can verify tracking at a glance.
+* **Esc key support**: Press `Esc` in the desktop app to exit eye mode instantly.
+
+Enable via the **Eye** toggle in the desktop app. Requires:
+
+* A camera (built-in or USB).
+* Optional Python deps: `opencv-python`, `mediapipe` (see `pylink/requirements.txt`). If missing, the Eye button is disabled and PixelLink runs normally for text/voice.
+* Camera permission (e.g. macOS: System Preferences → Security & Privacy → Camera).
+
+Calibration for more accurate gaze is planned for a future release.
+Advanced tuning env vars:
+* `PIXELINK_EYE_IRIS_GAIN_X` / `PIXELINK_EYE_IRIS_GAIN_Y` to control eye-movement sensitivity.
+* `PIXELINK_EYE_HEAD_WEIGHT` to blend head movement back in (default `0.0` = eyeballs-first).
+* `PIXELINK_EYE_INVERT_X` / `PIXELINK_EYE_INVERT_Y` if your camera orientation is reversed.
 
 ### Accessibility-First Design
 

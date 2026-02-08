@@ -47,9 +47,18 @@
     <form id="commandForm" class="command-form">
       <input id="commandInput" type="text" placeholder="Type a command..." autocomplete="off" />
       <button id="voiceBtn" class="voice-btn" type="button">Voice</button>
+      <button id="eyeControlBtn" class="eye-control-btn" type="button" title="Eye and blink control">Eye</button>
       <button type="submit">Send</button>
     </form>
   </main>
+  <aside id="eyePreviewPanel" class="eye-preview hidden" aria-live="polite">
+    <header class="eye-preview-header">
+      <strong>Eye Sensor</strong>
+      <span id="eyePreviewState">idle</span>
+    </header>
+    <video id="eyePreviewVideo" autoplay muted playsinline></video>
+    <div id="eyePreviewStats" class="eye-preview-stats">Waiting for eye control...</div>
+  </aside>
 
   <script src="./app.js"></script>
 </body>
