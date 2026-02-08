@@ -1,0 +1,158 @@
+:root {
+  color-scheme: light;
+  --bg: #f2f4f8;
+  --panel: #ffffff;
+  --border: #dde3ec;
+  --text: #152238;
+  --muted: #51617a;
+  --ok: #2a7a4f;
+  --warn: #a87718;
+  --err: #b1493f;
+  --accent: #1c4fd4;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--bg);
+  font-family: "SF Pro Text", "Avenir Next", "Helvetica Neue", sans-serif;
+  color: var(--text);
+}
+
+body {
+  padding: 10px;
+}
+
+.console {
+  height: calc(100vh - 20px);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  overflow: hidden;
+}
+
+.console-header {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.console-header h1 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.status-wrap {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.84rem;
+}
+
+.status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+
+.status-online {
+  background: var(--ok);
+}
+
+.status-warn {
+  background: var(--warn);
+}
+
+.status-offline {
+  background: var(--err);
+}
+
+.hide-btn {
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--muted);
+  border-radius: 8px;
+  padding: 5px 10px;
+  font-size: 0.78rem;
+}
+
+.log-area {
+  padding: 10px;
+  overflow: auto;
+  display: grid;
+  gap: 7px;
+}
+
+.log-entry {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #f8fafc;
+  padding: 8px 9px;
+  font-size: 0.8rem;
+  line-height: 1.3;
+}
+
+.log-entry strong {
+  display: block;
+  margin-bottom: 2px;
+  font-size: 0.8rem;
+}
+
+.log-info strong {
+  color: var(--muted);
+}
+
+.log-success strong {
+  color: var(--ok);
+}
+
+.log-warning strong {
+  color: var(--warn);
+}
+
+.log-error strong {
+  color: var(--err);
+}
+
+.command-form {
+  border-top: 1px solid var(--border);
+  padding: 8px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.command-form input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 10px;
+  font-size: 0.86rem;
+}
+
+.command-form input:focus {
+  outline: none;
+  border-color: #8da7de;
+}
+
+.command-form button {
+  border: none;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  padding: 0 14px;
+  font-size: 0.84rem;
+}
+

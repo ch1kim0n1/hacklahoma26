@@ -4,15 +4,19 @@ import argparse
 import logging
 import os
 import platform
+import subprocess
+import sys
 from datetime import datetime
 from typing import Optional
+from pathlib import Path
 
-from core.context.session import SessionContext
-from core.executor.engine import ExecutionEngine
 from core.input.text_input import read_text_input
-from core.nlu.parser import parse_intent
-from core.planner.action_planner import ActionPlanner
-from core.safety.guard import KillSwitch, SafetyGuard
+from core.runtime.orchestrator import DEFAULT_PERMISSION_PROFILE, PixelLinkRuntime
+
+# Add parent directory to path to import bridge
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.append(str(ROOT))
+from bridge import load_plugins
 
 
 def _setup_logging() -> None:
@@ -60,6 +64,56 @@ def _output(message: str, voice_controller=None) -> None:
 
 def main() -> None:
     args = _parse_args()
+def launch_electron_ui() -> None:
+    """Launch the Electron UI"""
+    electron_dir = ROOT / "electron"
+    
+    # Check if electron is installed
+    package_json = electron_dir / "package.json"
+    node_modules = electron_dir / "node_modules"
+    
+    if not package_json.exists():
+        print(f"❌ Error: Electron UI not found at {electron_dir}")
+        print("Please ensure the electron directory exists.")
+        sys.exit(1)
+    
+    # Install dependencies if needed
+    if not node_modules.exists():
+        print("📦 Installing Electron dependencies...")
+        try:
+            subprocess.run(
+                ["npm", "install"],
+                cwd=electron_dir,
+                check=True,
+                capture_output=True
+            )
+            print("✓ Dependencies installed")
+        except subprocess.CalledProcessError as e:
+            print(f"❌ Failed to install dependencies: {e}")
+            print("Please run 'npm install' in the electron directory manually.")
+            sys.exit(1)
+        except FileNotFoundError:
+            print("❌ npm not found. Please install Node.js and npm first.")
+            print("Download from: https://nodejs.org/")
+            sys.exit(1)
+    
+    # Launch Electron
+    print("🚀 Launching PixelLink Electron UI...")
+    try:
+        subprocess.run(
+            ["npm", "start"],
+            cwd=electron_dir,
+            check=False  # Don't raise exception on exit
+        )
+    except KeyboardInterrupt:
+        print("\n✓ Electron UI closed")
+    except Exception as e:
+        print(f"❌ Error launching Electron UI: {e}")
+        sys.exit(1)
+
+
+def run_cli_mode() -> None:
+    """Run the original CLI mode"""
     _setup_logging()
 
     # Initialize voice controller if voice mode enabled
@@ -94,12 +148,39 @@ def main() -> None:
     else:
         print(f"⚠ WARNING: Unsupported OS '{system}'. Functionality may be limited.")
 
-    session = SessionContext()
-    guard = SafetyGuard()
-    kill_switch = KillSwitch()
-    kill_switch.start()
-    planner = ActionPlanner()
-    executor = ExecutionEngine(kill_switch)
+    calendar_credentials = os.getenv("PIXELINK_CALENDAR_CREDENTIALS_PATH")
+    calendar_token = os.getenv("PIXELINK_CALENDAR_TOKEN_PATH")
+    gmail_credentials = os.getenv("PIXELINK_GMAIL_CREDENTIALS_PATH")
+    gmail_token = os.getenv("PIXELINK_GMAIL_TOKEN_PATH")
+
+    # Load MCP plugins
+    user_config = {
+        "reminders-mcp": {},
+        "notes-mcp": {},
+        "calendar-mcp": {
+            **({"credentials_path": calendar_credentials} if calendar_credentials else {}),
+            **({"token_path": calendar_token} if calendar_token else {}),
+        },
+        "gmail-mcp": {
+            **({"credentials_path": gmail_credentials} if gmail_credentials else {}),
+            **({"token_path": gmail_token} if gmail_token else {}),
+        },
+    }
+    try:
+        mcp_tools = load_plugins(ROOT / "plugins", user_config)
+        tool_map = {tool["name"]: tool["fn"] for tool in mcp_tools}
+        print(f"✓ Loaded {len(mcp_tools)} MCP tools: {', '.join(tool_map.keys())}")
+    except Exception as e:
+        print(f"⚠ Warning: Could not load MCP plugins: {e}")
+        tool_map = {}
+
+    runtime = PixelLinkRuntime(
+        dry_run=False,
+        speed=1.0,
+        permission_profile=DEFAULT_PERMISSION_PROFILE,
+        enable_kill_switch=True,
+        mcp_tools=tool_map,
+    )
 
     # Startup message
     mode_desc = "voice" if (args.voice or args.voice_only) else "text"
@@ -177,6 +258,57 @@ def main() -> None:
     kill_switch.stop()
     if voice_controller:
         voice_controller.cleanup()
+    print("\nPixelLink started. Type 'exit' to quit. Press ESC for kill switch.")
+    print("\nℹ️  New features:")
+    print("  - Enhanced web search (try: 'browse for python tutorials')")
+    print("  - Browsing history tracking")
+    print("  - File system context (indexing files in background...)")
+    print("  - Smart app opening (focuses if already running)")
+    print("  - Autofill passwords (try: 'login to github')")
+    print("  - Type 'context' to see current context summary")
+
+    try:
+        while True:
+            input_data = read_text_input()
+            raw_text = input_data["raw_text"]
+            if not raw_text:
+                continue
+            if raw_text.lower() in {"exit", "quit"}:
+                break
+            
+            # Special command to show context
+            if raw_text.lower() == "context":
+                context_summary = runtime.session.get_context_summary()
+                print("\n" + "="*60)
+                print("Current Context:")
+                print("="*60)
+                print(context_summary)
+                print("="*60 + "\n")
+                continue
+
+            result = runtime.handle_input(raw_text, source=input_data.get("source", "text"))
+            if result.get("steps"):
+                print("Planned steps:")
+                for index, step in enumerate(result["steps"], start=1):
+                    print(f"  {index}. {step['action']} - {step['description']}")
+            print(result.get("message", ""))
+            suggestions = result.get("suggestions", [])
+            if suggestions:
+                print("Try:")
+                for suggestion in suggestions:
+                    print(f"  - {suggestion}")
+            logging.info("Runtime result: %s", result)
+    finally:
+        runtime.close()
+
+
+def main() -> None:
+    """Main entry point - launches Electron UI by default, CLI with --cli flag"""
+    # Check for CLI mode flag
+    if "--cli" in sys.argv or "-c" in sys.argv:
+        run_cli_mode()
+    else:
+        launch_electron_ui()
 
 
 if __name__ == "__main__":

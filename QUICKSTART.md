@@ -31,6 +31,22 @@ python3 demo/email_reply_demo.py
 
 ---
 
+## New Desktop UI (Electron)
+
+```bash
+cd /path/to/hacklahoma26/electron
+npm install
+npm run start
+```
+
+For a safe UI test without OS automation:
+
+```bash
+npm run start:dry-run
+```
+
+---
+
 ## macOS: Enable Accessibility Permissions
 
 **⚠️ CRITICAL: Required for kill switch (ESC key) to work**

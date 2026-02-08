@@ -1,0 +1,1 @@
+{"id":"gmail-mcp","name":"Gmail MCP","description":"Read and send Gmail messages","config_schema":{"type":"object","properties":{"credentials_path":{"type":"string"},"token_path":{"type":"string"}},"required":["credentials_path"]}}

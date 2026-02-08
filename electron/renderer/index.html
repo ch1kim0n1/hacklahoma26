@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PixelLink</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <main class="console">
+    <header class="console-header">
+      <h1>PixelLink</h1>
+      <div class="status-wrap">
+        <span id="statusDot" class="status-dot status-offline"></span>
+        <span id="statusText">Offline</span>
+      </div>
+      <button id="hideBtn" class="hide-btn" type="button">Hide</button>
+    </header>
+
+    <section class="log-area" id="logArea"></section>
+
+    <form id="commandForm" class="command-form">
+      <input id="commandInput" type="text" placeholder="Type a command..." autocomplete="off" />
+      <button type="submit">Send</button>
+    </form>
+  </main>
+
+  <script src="./app.js"></script>
+</body>
+</html>
+

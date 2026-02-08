@@ -10,7 +10,15 @@ This demo simulates the full accessibility workflow for Alex:
 This is a deterministic, automated demo suitable for live presentations.
 """
 
+import sys
 import time
+from pathlib import Path
+
+# Allow running this file directly: `python demo/email_reply_demo.py`
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from core.context.session import SessionContext
 from core.executor.engine import ExecutionEngine
 from core.nlu.parser import parse_intent
