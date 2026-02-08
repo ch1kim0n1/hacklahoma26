@@ -10,10 +10,12 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-# Load environment variables from .env file next to this script
-# (needed because Electron sets CWD to repo root, not pylink/)
+# Load environment variables from .env file
+# Check pylink folder, then parent folder (hacklahoma26), then CWD
 _PYLINK_DIR = Path(__file__).resolve().parent
+_PARENT_DIR = _PYLINK_DIR.parent
 load_dotenv(_PYLINK_DIR / ".env")
+load_dotenv(_PARENT_DIR / ".env")  # Check parent folder (where .env usually is)
 load_dotenv()  # Also check CWD / parent dirs as fallback
 
 from core.runtime.orchestrator import DEFAULT_PERMISSION_PROFILE, MaesRuntime
@@ -313,14 +315,20 @@ def main() -> int:
         from core.voice import VoiceController
 
         if requested_voice_input or requested_voice_output:
+            _write_json({"status": "info", "message": "Initializing voice controller..."})
             voice_controller = VoiceController(
                 enable_tts=requested_voice_output,
                 enable_stt=requested_voice_input,
             )
             voice_errors = voice_controller.init_errors
+            if voice_errors:
+                _write_json({"status": "warning", "message": f"Voice init warnings: {voice_errors}"})
+            else:
+                _write_json({"status": "info", "message": "Voice controller initialized successfully"})
     except Exception as exc:
         voice_errors["voice"] = str(exc)
         voice_controller = None
+        _write_json({"status": "error", "message": f"Voice controller failed: {exc}"})
 
     voice_input_enabled = bool(voice_controller and voice_controller.stt_available)
     voice_output_enabled = bool(voice_controller and voice_controller.tts_available)
@@ -557,9 +565,11 @@ def main() -> int:
 
                 text = str(payload.get("text", ""))
                 source = str(payload.get("source", "text"))
+                _write_json({"status": "info", "message": f"Processing input: {text[:100]}"})
                 try:
                     _set_pipeline_state("processing")
                     result = runtime.handle_input(text, source=source)
+                    _write_json({"status": "info", "message": f"Got result: status={result.get('status')}, message={result.get('message', '')[:100]}"})
 
                     # Speak pre-task announcement before action
                     _speak_pre_task(result)
@@ -569,7 +579,9 @@ def main() -> int:
 
                     # Output phase - speak the response
                     _set_pipeline_state("output")
+                    _write_json({"status": "info", "message": "Speaking response..."})
                     _speak_response(result)
+                    _write_json({"status": "info", "message": "Done speaking"})
                     _apply_accessibility_side_effects(result)
 
                     result["voice"] = _voice_state()
@@ -594,6 +606,48 @@ def main() -> int:
                     )
                 finally:
                     _set_pipeline_state("idle")
+                continue
+
+            if action == "listen_only":
+                # Simple listen action - just returns transcript without processing
+                if not voice_controller or not voice_input_enabled:
+                    _write_json(
+                        _build_voice_error(
+                            code="VOICE_INPUT_UNAVAILABLE",
+                            request_id=request_id,
+                            extra={**_runtime_state(runtime), "voice": _voice_state()},
+                        )
+                    )
+                    continue
+
+                _set_pipeline_state("listen")
+                try:
+                    transcript = voice_controller.listen(
+                        allow_text_fallback=False,
+                        status_callback=lambda _status: None,
+                    ).strip()
+                except Exception as exc:
+                    _set_pipeline_state("idle")
+                    _write_json(
+                        _build_voice_error(
+                            code="VOICE_INPUT_FAILED",
+                            request_id=request_id,
+                            error=exc,
+                            details=str(exc),
+                            extra={**_runtime_state(runtime), "voice": _voice_state()},
+                        )
+                    )
+                    continue
+
+                _set_pipeline_state("idle")
+                response = {
+                    "status": "completed",
+                    "transcript": transcript,
+                    "voice": _voice_state(),
+                }
+                if request_id is not None:
+                    response["request_id"] = request_id
+                _write_json(response)
                 continue
 
             if action == "capture_voice_input":
@@ -810,6 +864,27 @@ def main() -> int:
                     **_runtime_state(runtime),
                     "voice": _voice_state(),
                     "accessibility": _current_accessibility_state(),
+                }
+                if request_id is not None:
+                    response["request_id"] = request_id
+                _write_json(response)
+                continue
+
+            if action == "trigger_introduction":
+                # Maes introduces itself on startup
+                introduction = "Hello! I'm Maes, your AI assistant. Say Hey Maes anytime to get my attention."
+                if voice_controller and voice_output_enabled:
+                    try:
+                        _set_pipeline_state("output")
+                        voice_controller.speak(introduction, blocking=True)
+                    except Exception:
+                        pass
+                    finally:
+                        _set_pipeline_state("idle")
+                response = {
+                    "status": "completed",
+                    "message": introduction,
+                    "voice": _voice_state(),
                 }
                 if request_id is not None:
                     response["request_id"] = request_id

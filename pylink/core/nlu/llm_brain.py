@@ -210,8 +210,8 @@ class ConversationalAI:
         if not self.api_key:
             raise ValueError("OpenAI API key not found. Set OPENAI_API_KEY in .env file.")
 
-        self.client = OpenAI(api_key=self.api_key)
-        self.model_id = "gpt-4o"  # Use GPT-4o for better conversational understanding
+        self.client = OpenAI(api_key=self.api_key, timeout=30.0)  # 30 second timeout
+        self.model_id = "gpt-4o-mini"  # Use GPT-4o-mini for faster responses
         self.conversation_history: List[Dict[str, str]] = []
         self.pending_action: Optional[Dict[str, Any]] = None
         logger.info(f"ConversationalAI initialized with model: {self.model_id}")

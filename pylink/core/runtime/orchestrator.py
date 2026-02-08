@@ -212,6 +212,16 @@ class MaesRuntime:
         if not cleaned_text:
             return self._response("idle", "No input provided.", source=source)
 
+        # Handle special greeting response for "how are you" questions
+        if cleaned_text == "__greeting__how_are_you":
+            greeting_response = "I'm doing great, thank you for asking! How can I help you today?"
+            return self._response("completed", greeting_response, source=source)
+
+        # Handle wake word acknowledgment
+        if cleaned_text == "__greeting__acknowledged":
+            ack_response = "Yes? How can I help you?"
+            return self._response("completed", ack_response, source=source)
+
         deterministic_intent = parse_intent(cleaned_text, self.session)
         if deterministic_intent.name in {"set_blind_mode", "read_status", "repeat_last_response", "blind_help"}:
             self.session.record_intent(deterministic_intent.name, cleaned_text)
@@ -335,8 +345,16 @@ class MaesRuntime:
             "browsing_context": self.session.get_context_summary() if hasattr(self.session, 'get_context_summary') else "",
         }
 
-        # Analyze with conversational AI
-        analysis = analyze_with_conversation(cleaned_text, context)
+        # Analyze with conversational AI (with error handling)
+        try:
+            analysis = analyze_with_conversation(cleaned_text, context)
+        except Exception as e:
+            # If conversational AI fails, return a friendly error message
+            return self._response(
+                "error",
+                f"I had trouble understanding that. Could you try again? (Error: {str(e)[:100]})",
+                source=source,
+            )
         status = analysis.get("status", "ready")
         intent_name = analysis.get("intent", "unknown")
         entities = analysis.get("entities", {})
@@ -483,10 +501,9 @@ class MaesRuntime:
                     result_msg = result.get("message", "")
 
                     if success:
-                        # Use LLM only for success messages
-                        completion_message = generate_completion_message(intent.name, True, result_msg)
-                        full_message = f"{pre_message}\n\n{completion_message}" if pre_message else completion_message
-                        full_message = full_message.strip() + "\n\nIs there anything else you'd like me to do?"
+                        # Simple completion message (skip AI call for faster response)
+                        full_message = f"Done! {result_msg}" if result_msg else "Done! Browser task completed."
+                        full_message = full_message.strip() + " Is there anything else?"
                         resp = self._response(
                             "completed",
                             full_message,
@@ -554,20 +571,28 @@ class MaesRuntime:
         return descriptions.get(name, f"Working on your request: {name}.")
 
     def _execute_intent_with_completion(self, intent: Intent, source: str) -> dict[str, Any]:
-        """Execute intent and generate AI completion message."""
+        """Execute intent and generate completion message."""
         # Generate pre-task announcement
         pre_msg = self._generate_pre_task_message(intent)
 
         result = self._execute_intent(intent, source)
 
-        # Generate completion message for successful executions
+        # Use simple completion message (skip AI call for faster response)
         if result.get("status") == "completed":
-            success_msg = generate_completion_message(
-                intent.name,
-                True,
-                result.get("message", "")
-            )
-            result["message"] = success_msg + "\n\nIs there anything else you'd like me to do?"
+            # Simple, fast completion messages
+            completion_messages = {
+                "open_app": "Done! The app is now open.",
+                "close_app": "Done! The app has been closed.",
+                "open_website": "Done! The website is now open.",
+                "search_web": "Done! Here are your search results.",
+                "type_text": "Done! I've typed the text.",
+                "click": "Done! I've clicked that for you.",
+                "scroll": "Done! I've scrolled the page.",
+                "press_key": "Done! Key pressed.",
+                "hotkey": "Done! Keyboard shortcut activated.",
+            }
+            simple_msg = completion_messages.get(intent.name, "Done!")
+            result["message"] = f"{simple_msg} Is there anything else?"
 
         result["pre_task_message"] = pre_msg
         return result
