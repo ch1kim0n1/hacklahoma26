@@ -1,29 +1,29 @@
 # hacklahoma26
 
-## PixelLink
+## Maes
 
 **An intent-driven accessibility operating layer for computers and phones**
 
-PixelLink enables people with disabilities to control computers and mobile devices using **intent**, not physical input.
+Maes enables people with disabilities to control computers and mobile devices using **intent**, not physical input.
 It translates natural language and alternative inputs into OS-level actions—allowing users to operate modern technology without relying on keyboards, mice, or rigid command systems.
 
 ---
 
-## What PixelLink Is
+## What Maes Is
 
-PixelLink is a **local-first AI accessibility platform** that:
+Maes is a **local-first AI accessibility platform** that:
 
 * Understands what a user wants to do
 * Safely plans the required actions
 * Executes them across operating systems and devices
 
-PixelLink is **not**:
+Maes is **not**:
 
 * A voice assistant
 * A screen reader
 * A macro automation tool
 
-PixelLink is an **intent-based operating layer**.
+Maes is an **intent-based operating layer**.
 
 ---
 
@@ -42,18 +42,18 @@ Existing accessibility tools are:
 * Hard-coded
 * Difficult to extend
 
-**PixelLink removes these assumptions.**
+**Maes removes these assumptions.**
 
 ---
 
 ## Core Concept: Intent Over Interaction
 
-Instead of asking *how* a user interacts, PixelLink focuses on *what* the user wants to accomplish.
+Instead of asking *how* a user interacts, Maes focuses on *what* the user wants to accomplish.
 
 Example:
 “Reply to the last email and attach the document I edited yesterday”
 
-PixelLink:
+Maes:
 
 1. Understands intent
 2. Plans the steps
@@ -120,7 +120,7 @@ User Input (Text / Voice / Face / Phone)
 
 ### Eye and Blink Control
 
-PixelLink can use a webcam for **gaze** and **blink** input (inspired by Project-VISION):
+Maes can use a webcam for **gaze** and **blink** input (inspired by Project-VISION):
 
 * **Gaze**: Where you look drives the system mouse cursor (“look to point”).
 * **Single blink**: Confirm a pending action.
@@ -132,14 +132,14 @@ PixelLink can use a webcam for **gaze** and **blink** input (inspired by Project
 Enable via the **Eye** toggle in the desktop app. Requires:
 
 * A camera (built-in or USB).
-* Optional Python deps: `opencv-python`, `mediapipe` (see `pylink/requirements.txt`). If missing, the Eye button is disabled and PixelLink runs normally for text/voice.
+* Optional Python deps: `opencv-python`, `mediapipe` (see `pylink/requirements.txt`). If missing, the Eye button is disabled and Maes runs normally for text/voice.
 * Camera permission (e.g. macOS: System Preferences → Security & Privacy → Camera).
 
 Calibration for more accurate gaze is planned for a future release.
 Advanced tuning env vars:
-* `PIXELINK_EYE_IRIS_GAIN_X` / `PIXELINK_EYE_IRIS_GAIN_Y` to control eye-movement sensitivity.
-* `PIXELINK_EYE_HEAD_WEIGHT` to blend head movement back in (default `0.0` = eyeballs-first).
-* `PIXELINK_EYE_INVERT_X` / `PIXELINK_EYE_INVERT_Y` if your camera orientation is reversed.
+* `MAES_EYE_IRIS_GAIN_X` / `MAES_EYE_IRIS_GAIN_Y` to control eye-movement sensitivity.
+* `MAES_EYE_HEAD_WEIGHT` to blend head movement back in (default `0.0` = eyeballs-first).
+* `MAES_EYE_INVERT_X` / `MAES_EYE_INVERT_Y` if your camera orientation is reversed.
 
 ### Accessibility-First Design
 
@@ -151,7 +151,7 @@ Advanced tuning env vars:
 
 ## Privacy & Security
 
-PixelLink is **local-first** by design.
+Maes is **local-first** by design.
 
 ### Guarantees
 
@@ -216,7 +216,7 @@ See details in `electron/README.md`.
 
 ### Blind Mode (V1)
 
-PixelLink now includes a persistent **Blind Mode** for non-visual operation in the desktop app.
+Maes now includes a persistent **Blind Mode** for non-visual operation in the desktop app.
 
 How to use:
 
@@ -230,7 +230,7 @@ How to use:
    - `read status`
    - `repeat last response`
    - `blind help`
-4. For sensitive actions, PixelLink explicitly asks for `confirm` or `cancel`.
+4. For sensitive actions, Maes explicitly asks for `confirm` or `cancel`.
 
 Blind Mode forces voice feedback on and emits screen-reader-friendly live announcements in the Electron UI.
 
@@ -251,7 +251,7 @@ The full mission feature implementation map is documented in:
 1. User inputs:
    “Reply saying I’ll send the file tomorrow”
 
-2. PixelLink:
+2. Maes:
 
    * Identifies the target email
    * Drafts the response
@@ -265,7 +265,7 @@ The full mission feature implementation map is documented in:
 
 ---
 
-## How PixelLink Is Different
+## How Maes Is Different
 
 * Intent-based instead of command-based
 * OS-wide control instead of app-limited control
@@ -297,7 +297,7 @@ The full mission feature implementation map is documented in:
 
 ## Mission
 
-PixelLink exists to remove physical barriers between people and technology—by letting intent, not ability, define access.
+Maes exists to remove physical barriers between people and technology—by letting intent, not ability, define access.
 
 ---
 

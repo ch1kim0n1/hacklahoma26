@@ -1,4 +1,4 @@
-# PixelLink MVP - Quick Start Guide
+# Maes MVP - Quick Start Guide
 
 **Get up and running in 2 minutes**
 
@@ -128,7 +128,7 @@ Use exact app name:
 "People with limited mobility can't use keyboards and mice. Existing tools are fragmented and rigid."
 
 ### 2. The Solution (30 seconds)
-"PixelLink uses intent-based control. Users say what they want, not how to do it."
+"Maes uses intent-based control. Users say what they want, not how to do it."
 
 ### 3. Live Demo (3 minutes)
 ```bash
@@ -288,7 +288,7 @@ python3 main.py
 cat core/nlu/parser.py | grep "def parse_intent"
 
 # Show recent logs
-cat logs/pixelink-*.log | tail -20
+cat logs/maes-*.log | tail -20
 ```
 
 ### Plan C: Explain Architecture
@@ -352,4 +352,4 @@ Before submission:
 
 **You're ready to demo! 🚀**
 
-*PixelLink exists to remove physical barriers between people and technology—by letting intent, not ability, define access.*
+*Maes exists to remove physical barriers between people and technology—by letting intent, not ability, define access.*

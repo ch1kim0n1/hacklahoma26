@@ -16,7 +16,7 @@ _PYLINK_DIR = Path(__file__).resolve().parent
 load_dotenv(_PYLINK_DIR / ".env")
 load_dotenv()  # Also check CWD / parent dirs as fallback
 
-from core.runtime.orchestrator import DEFAULT_PERMISSION_PROFILE, PixelLinkRuntime
+from core.runtime.orchestrator import DEFAULT_PERMISSION_PROFILE, MaesRuntime
 
 # Add parent directory to path to import bridge
 ROOT = Path(__file__).resolve().parents[1]
@@ -75,7 +75,7 @@ def _as_bool(value: str | None, default: bool = False) -> bool:
     return value.lower() in {"1", "true", "yes", "on"}
 
 
-def _runtime_state(runtime: PixelLinkRuntime) -> dict[str, Any]:
+def _runtime_state(runtime: MaesRuntime) -> dict[str, Any]:
     return {
         "pending_confirmation": bool(runtime.session.pending_steps),
         "pending_clarification": bool(runtime.session.pending_clarification),
@@ -160,7 +160,7 @@ def _voice_error_guidance(code: str, details: str = "") -> tuple[str, list[str]]
             "Voice input is currently unavailable.",
             [
                 "Enable voice input in settings, then try again.",
-                "If microphone permission changed recently, restart PixelLink.",
+                "If microphone permission changed recently, restart Maes.",
             ],
         )
     if code == "VOICE_INPUT_EMPTY":
@@ -176,7 +176,7 @@ def _voice_error_guidance(code: str, details: str = "") -> tuple[str, list[str]]
             "Microphone permission is blocked.",
             [
                 "Allow microphone access for Terminal/Electron in system privacy settings.",
-                "Restart PixelLink after granting permission.",
+                "Restart Maes after granting permission.",
             ],
         )
     if "pyaudio" in detail or "portaudio" in detail:
@@ -184,7 +184,7 @@ def _voice_error_guidance(code: str, details: str = "") -> tuple[str, list[str]]
             "Microphone audio backend is unavailable.",
             [
                 "Install or repair PyAudio/PortAudio dependencies.",
-                "Restart PixelLink after installation.",
+                "Restart Maes after installation.",
             ],
         )
     if "network" in detail or "connection" in detail:
@@ -192,7 +192,7 @@ def _voice_error_guidance(code: str, details: str = "") -> tuple[str, list[str]]
             "Voice model download failed due to a network issue.",
             [
                 "Check your internet connection and try again.",
-                "Keep PixelLink open until model preparation completes.",
+                "Keep Maes open until model preparation completes.",
             ],
         )
     if "whisper" in detail or "model" in detail:
@@ -215,7 +215,7 @@ def _voice_error_guidance(code: str, details: str = "") -> tuple[str, list[str]]
         "Voice command failed.",
         [
             "Try again in a quieter environment.",
-            "If the issue continues, restart PixelLink.",
+            "If the issue continues, restart Maes.",
         ],
     )
 
@@ -257,20 +257,20 @@ def _build_voice_error(
 
 
 def main() -> int:
-    dry_run = _as_bool(os.getenv("PIXELINK_DRY_RUN"), default=False)
-    speed = float(os.getenv("PIXELINK_SPEED", "1.0"))
-    enable_kill_switch = _as_bool(os.getenv("PIXELINK_ENABLE_KILL_SWITCH"), default=False)
-    requested_voice_output = _as_bool(os.getenv("PIXELINK_VOICE_OUTPUT"), default=True)
-    requested_voice_input = _as_bool(os.getenv("PIXELINK_VOICE_INPUT"), default=True)
-    blind_mode_enabled = _as_bool(os.getenv("PIXELINK_BLIND_MODE"), default=False)
-    narration_level = _normalize_narration_level(os.getenv("PIXELINK_NARRATION_LEVEL", "concise"))
-    screen_reader_hints_enabled = _as_bool(os.getenv("PIXELINK_SCREEN_READER_HINTS"), default=True)
+    dry_run = _as_bool(os.getenv("MAES_DRY_RUN"), default=False)
+    speed = float(os.getenv("MAES_SPEED", "1.0"))
+    enable_kill_switch = _as_bool(os.getenv("MAES_ENABLE_KILL_SWITCH"), default=False)
+    requested_voice_output = _as_bool(os.getenv("MAES_VOICE_OUTPUT"), default=True)
+    requested_voice_input = _as_bool(os.getenv("MAES_VOICE_INPUT"), default=True)
+    blind_mode_enabled = _as_bool(os.getenv("MAES_BLIND_MODE"), default=False)
+    narration_level = _normalize_narration_level(os.getenv("MAES_NARRATION_LEVEL", "concise"))
+    screen_reader_hints_enabled = _as_bool(os.getenv("MAES_SCREEN_READER_HINTS"), default=True)
     last_announcement = ""
 
-    calendar_credentials = os.getenv("PIXELINK_CALENDAR_CREDENTIALS_PATH")
-    calendar_token = os.getenv("PIXELINK_CALENDAR_TOKEN_PATH")
-    gmail_credentials = os.getenv("PIXELINK_GMAIL_CREDENTIALS_PATH")
-    gmail_token = os.getenv("PIXELINK_GMAIL_TOKEN_PATH")
+    calendar_credentials = os.getenv("MAES_CALENDAR_CREDENTIALS_PATH")
+    calendar_token = os.getenv("MAES_CALENDAR_TOKEN_PATH")
+    gmail_credentials = os.getenv("MAES_GMAIL_CREDENTIALS_PATH")
+    gmail_token = os.getenv("MAES_GMAIL_TOKEN_PATH")
 
     # Load MCP plugins
     user_config: dict[str, dict[str, Any]] = {
@@ -292,7 +292,7 @@ def main() -> int:
         _write_json({"status": "warning", "message": f"Could not load MCP plugins: {e}"})
         tool_map = {}
 
-    runtime = PixelLinkRuntime(
+    runtime = MaesRuntime(
         dry_run=dry_run,
         speed=speed,
         permission_profile=DEFAULT_PERMISSION_PROFILE,
@@ -495,7 +495,7 @@ def main() -> int:
     _write_json(
         {
             "status": "ready",
-            "message": "PixelLink bridge online",
+            "message": "Maes bridge online",
             "dry_run": dry_run,
             "speed": speed,
             "voice": _voice_state(),

@@ -58,7 +58,7 @@ DEFAULT_PERMISSION_PROFILE = {
 }
 
 
-class PixelLinkRuntime:
+class MaesRuntime:
     def __init__(
         self,
         *,

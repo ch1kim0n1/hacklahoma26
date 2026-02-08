@@ -360,7 +360,7 @@ function spawnBridge(command) {
       env: {
         ...process.env,
         PYTHONUNBUFFERED: "1",
-        PIXELINK_ENABLE_KILL_SWITCH: "0"
+        MAES_ENABLE_KILL_SWITCH: "0"
       },
       stdio: ["pipe", "pipe", "pipe"]
     });
@@ -508,7 +508,7 @@ function createMainWindow() {
     minWidth: 420,
     minHeight: 280,
     show: false,
-    title: "PixelLink",
+    title: "Maes",
     backgroundColor: "#f2f4f8",
     titleBarStyle: "hiddenInset",
     webPreferences: {
@@ -547,7 +547,7 @@ function createLauncherWindow() {
     alwaysOnTop: true,
     skipTaskbar: true,
     hasShadow: false,
-    title: "PixelLink Launcher",
+    title: "Maes Launcher",
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,

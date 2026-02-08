@@ -1,5 +1,5 @@
-const PREFERENCES_KEY = "pixelink.ui.preferences.v1";
-const BLIND_ONBOARD_KEY = "pixelink.ui.blindmode.onboarded.v1";
+const PREFERENCES_KEY = "maes.ui.preferences.v1";
+const BLIND_ONBOARD_KEY = "maes.ui.blindmode.onboarded.v1";
 
 const state = {
   runtime: null,
@@ -139,7 +139,7 @@ function isLogVisible(entry) {
   if (entry.title === "Bridge Log") {
     return false;
   }
-  if (entry.level === "info" && !["Command", "Voice", "Heard", "PixelLink", "Model"].includes(entry.title)) {
+  if (entry.level === "info" && !["Command", "Voice", "Heard", "Maes", "Model"].includes(entry.title)) {
     return false;
   }
   return true;
@@ -737,7 +737,7 @@ async function boot() {
 
   const snapshot = await window.pixelink.getState();
   updateRuntime(snapshot.runtime);
-  appendLog("info", "PixelLink", "Console ready.");
+  appendLog("info", "Maes", "Console ready.");
 
   await syncAccessibilityPreferences();
   state.hasInitialPreferenceSync = true;

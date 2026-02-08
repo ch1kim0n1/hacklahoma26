@@ -75,7 +75,7 @@ class SpeechToText:
         self.last_error: Optional[str] = None
         self.cache_root = Path(
             os.getenv(
-                "PIXELINK_WHISPER_CACHE_DIR",
+                "MAES_WHISPER_CACHE_DIR",
                 str(Path.home() / ".cache" / "pixelink" / "whisper"),
             )
         ).expanduser()

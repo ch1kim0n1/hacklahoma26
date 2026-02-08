@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from core.input.text_input import read_text_input
-from core.runtime.orchestrator import DEFAULT_PERMISSION_PROFILE, PixelLinkRuntime
+from core.runtime.orchestrator import DEFAULT_PERMISSION_PROFILE, MaesRuntime
 
 # Add parent directory to path to import bridge
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,7 +26,7 @@ from bridge import load_plugins
 
 def _setup_logging() -> None:
     os.makedirs("logs", exist_ok=True)
-    log_file = os.path.join("logs", f"pixelink-{datetime.now().strftime('%Y%m%d')}.log")
+    log_file = os.path.join("logs", f"maes-{datetime.now().strftime('%Y%m%d')}.log")
     logging.basicConfig(
         filename=log_file,
         level=logging.INFO,
@@ -37,7 +37,7 @@ def _setup_logging() -> None:
 def _parse_args() -> argparse.Namespace:
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="PixelLink - Intent-driven accessibility operating layer"
+        description="Maes - Intent-driven accessibility operating layer"
     )
     parser.add_argument(
         "--cli", "-c",
@@ -108,7 +108,7 @@ def launch_electron_ui() -> None:
             sys.exit(1)
     
     # Launch Electron
-    print("🚀 Launching PixelLink Electron UI...")
+    print("🚀 Launching Maes Electron UI...")
     try:
         subprocess.run(
             ["npm", "start"],
@@ -147,7 +147,7 @@ def run_cli_mode() -> None:
 
     # OS Detection and Warning
     system = platform.system()
-    print(f"PixelLink MVP - Running on {system}")
+    print(f"Maes MVP - Running on {system}")
     if system == "Darwin":
         print("✓ macOS detected (recommended)")
         print("⚠ Note: Ensure accessibility permissions are enabled for Terminal/Python")
@@ -159,10 +159,10 @@ def run_cli_mode() -> None:
     else:
         print(f"⚠ WARNING: Unsupported OS '{system}'. Functionality may be limited.")
 
-    calendar_credentials = os.getenv("PIXELINK_CALENDAR_CREDENTIALS_PATH")
-    calendar_token = os.getenv("PIXELINK_CALENDAR_TOKEN_PATH")
-    gmail_credentials = os.getenv("PIXELINK_GMAIL_CREDENTIALS_PATH")
-    gmail_token = os.getenv("PIXELINK_GMAIL_TOKEN_PATH")
+    calendar_credentials = os.getenv("MAES_CALENDAR_CREDENTIALS_PATH")
+    calendar_token = os.getenv("MAES_CALENDAR_TOKEN_PATH")
+    gmail_credentials = os.getenv("MAES_GMAIL_CREDENTIALS_PATH")
+    gmail_token = os.getenv("MAES_GMAIL_TOKEN_PATH")
 
     # Load MCP plugins
     user_config = {
@@ -185,7 +185,7 @@ def run_cli_mode() -> None:
         print(f"⚠ Warning: Could not load MCP plugins: {e}")
         tool_map = {}
 
-    runtime = PixelLinkRuntime(
+    runtime = MaesRuntime(
         dry_run=False,
         speed=1.0,
         permission_profile=DEFAULT_PERMISSION_PROFILE,
@@ -197,13 +197,13 @@ def run_cli_mode() -> None:
     mode_desc = "voice" if (args.voice or args.voice_only) else "text"
     if args.tts_only:
         mode_desc = "text input with voice output"
-    startup_msg = f"\nPixelLink started in {mode_desc} mode. Say 'exit' to quit. Press ESC for kill switch."
+    startup_msg = f"\nMaes started in {mode_desc} mode. Say 'exit' to quit. Press ESC for kill switch."
     print(startup_msg)
 
     if voice_controller:
-        voice_controller.speak("PixelLink is ready. How can I help you?", blocking=True)
+        voice_controller.speak("Maes is ready. How can I help you?", blocking=True)
 
-    print("\nPixelLink started. Type 'exit' to quit. Press ESC for kill switch.")
+    print("\nMaes started. Type 'exit' to quit. Press ESC for kill switch.")
     print("\nℹ️  Features:")
     print("  - Advanced emotional intelligence (Plutchik's 8 emotions, burnout detection, sarcasm awareness)")
     print("  - Calendar & todo-aware mood analysis (auto-suggests rescheduling)")
