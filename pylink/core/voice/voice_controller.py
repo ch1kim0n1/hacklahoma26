@@ -253,6 +253,11 @@ class VoiceController:
             return str(self._stt.last_error)
         return ""
 
+    @property
+    def stt_startup_timeout(self) -> bool:
+        """True if STT timed out waiting for voice (15 sec no speech)."""
+        return bool(self._stt and getattr(self._stt, "last_startup_timeout", False))
+
 
 def read_voice_input(voice: VoiceController, prompt: str = "") -> dict:
     """Read input from voice (drop-in replacement for read_text_input).

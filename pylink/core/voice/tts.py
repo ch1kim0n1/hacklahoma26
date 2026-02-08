@@ -50,6 +50,7 @@ class TextToSpeech:
         self._client = None
         self._is_speaking = False
         self._speak_lock = threading.Lock()
+        self._playback_process = None
 
         logging.info("TextToSpeech initialized with voice_id=%s, model=%s", self.voice_id, self.model)
 
@@ -131,7 +132,7 @@ class TextToSpeech:
             self._play_with_system(audio_bytes)
 
     def _play_with_system(self, audio_bytes: bytes) -> None:
-        """Fallback: play audio using system command."""
+        """Play audio using system command. Uses Popen so playback can be interrupted."""
         import subprocess
         import tempfile
         import platform
@@ -142,31 +143,53 @@ class TextToSpeech:
 
         try:
             system = platform.system()
-            if system == "Darwin":  # macOS
-                subprocess.run(["afplay", temp_path], check=True, capture_output=True)
+            proc = None
+            if system == "Darwin":  # macOS - Popen allows kill to interrupt
+                proc = subprocess.Popen(
+                    ["afplay", temp_path],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                self._playback_process = proc
+                proc.wait()
             elif system == "Windows":
-                # Use Windows Media Player
                 subprocess.run(
                     ["powershell", "-c", f"(New-Object Media.SoundPlayer '{temp_path}').PlaySync()"],
                     check=True,
                     capture_output=True,
                 )
             else:  # Linux
-                # Try common audio players
                 for player in ["mpv", "ffplay", "aplay"]:
                     try:
-                        subprocess.run([player, temp_path], check=True, capture_output=True)
+                        proc = subprocess.Popen(
+                            [player, temp_path],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                        self._playback_process = proc
+                        proc.wait()
                         break
                     except FileNotFoundError:
                         continue
         finally:
-            os.unlink(temp_path)
+            self._playback_process = None
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
 
     def stop(self) -> None:
-        """Stop current speech (if possible)."""
-        # Note: Stopping mid-speech is complex with current implementation
-        # Would require async audio playback with cancellation
+        """Stop current speech immediately (kills playback process if running)."""
         self._is_speaking = False
+        proc = getattr(self, "_playback_process", None)
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=0.5)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            self._playback_process = None
 
     @property
     def is_speaking(self) -> bool:

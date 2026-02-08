@@ -60,6 +60,7 @@ class SpeechToText:
         self._listen_lock = threading.Lock()
         self._pyaudio = None
         self.last_error: Optional[str] = None
+        self.last_startup_timeout: bool = False
 
         logging.info(
             "SpeechToText initialized with model=%s, device=%s",
@@ -104,13 +105,18 @@ class SpeechToText:
             self._is_listening = True
             self._stop_listening = False
             self.last_error = None
+            self.last_startup_timeout = False
 
             try:
                 if prompt_callback:
                     prompt_callback("listening")
 
                 # Record audio
-                audio_data = self._record_audio()
+                audio_data, startup_timeout = self._record_audio()
+
+                if startup_timeout:
+                    self.last_startup_timeout = True
+                    return ""
 
                 if not audio_data or len(audio_data) < 1000:
                     logging.info("No audio detected or too short")
@@ -136,8 +142,12 @@ class SpeechToText:
             finally:
                 self._is_listening = False
 
-    def _record_audio(self) -> bytes:
-        """Record audio from microphone until silence or max duration."""
+    def _record_audio(self) -> tuple[bytes, bool]:
+        """Record audio from microphone until silence or max duration.
+
+        Returns:
+            (audio_bytes, startup_timeout): Audio data and True if no voice for 15 sec.
+        """
         import pyaudio
 
         pa = self._get_pyaudio()
@@ -158,12 +168,13 @@ class SpeechToText:
         max_chunks = int(self.max_duration * self.SAMPLE_RATE / self.CHUNK_SIZE)
         energy_threshold = 500  # Adjust based on environment
 
-        # Wait for voice activity to start
+        # Wait for voice activity: 15 seconds max, then terminate
         voice_started = False
         startup_chunks = 0
         max_startup_wait = int(
-            10 * self.SAMPLE_RATE / self.CHUNK_SIZE
-        )  # 10 seconds max wait
+            15 * self.SAMPLE_RATE / self.CHUNK_SIZE
+        )  # 15 seconds max wait for voice
+        startup_timeout = False
 
         try:
             for _ in range(max_chunks + max_startup_wait):
@@ -184,7 +195,7 @@ class SpeechToText:
                         voice_started = True
                         frames.append(data)
                     elif startup_chunks >= max_startup_wait:
-                        # Timeout waiting for voice
+                        startup_timeout = True
                         break
                 else:
                     frames.append(data)
@@ -192,7 +203,7 @@ class SpeechToText:
                     if rms < energy_threshold:
                         silent_chunks += 1
                         if silent_chunks >= max_silent_chunks:
-                            # Silence detected, stop recording
+                            # 1 second silence: end of speech
                             break
                     else:
                         silent_chunks = 0
@@ -204,8 +215,10 @@ class SpeechToText:
             stream.stop_stream()
             stream.close()
 
+        if startup_timeout:
+            return b"", True
         if not frames:
-            return b""
+            return b"", False
 
         # Convert to WAV format
         wav_buffer = io.BytesIO()
@@ -215,7 +228,7 @@ class SpeechToText:
             wf.setframerate(self.SAMPLE_RATE)
             wf.writeframes(b"".join(frames))
 
-        return wav_buffer.getvalue()
+        return wav_buffer.getvalue(), False
 
     def _transcribe(self, audio_data: bytes) -> str:
         """Transcribe audio using Whisper."""

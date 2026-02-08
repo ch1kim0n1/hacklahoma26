@@ -70,13 +70,21 @@ function updateVoiceButtonState() {
   }
   const backendOnline = state.runtime?.backend === "online";
   const voiceInputEnabled = Boolean(state.runtime?.voice?.inputEnabled);
-  const enabled = backendOnline && voiceInputEnabled && !state.voiceListening;
+  const active = state.voiceListening || state.runtime?.voiceCaptureActive;
+  const phase = state.runtime?.voicePhase || "idle";
+  const enabled = backendOnline && voiceInputEnabled && !active;
 
   elements.voiceBtn.disabled = !enabled;
-  elements.voiceBtn.classList.toggle("listening", state.voiceListening);
+  elements.voiceBtn.classList.toggle("listening", active);
 
-  if (state.voiceListening) {
-    elements.voiceBtn.textContent = "Listening...";
+  if (active) {
+    if (phase === "processing") {
+      elements.voiceBtn.textContent = "Processing...";
+    } else if (phase === "speaking") {
+      elements.voiceBtn.textContent = "Speaking...";
+    } else {
+      elements.voiceBtn.textContent = "Listening...";
+    }
   } else if (!voiceInputEnabled) {
     elements.voiceBtn.textContent = "Voice Off";
   } else {
@@ -151,11 +159,12 @@ async function submitVoiceCommand() {
   appendLog("info", "Voice", "Listening for command...");
 
   try {
-    const result = await window.pixelink.captureVoiceInput();
+    const result = await window.pixelink.captureVoiceInput("", { continuous: true });
     logResult(result);
+    state.voiceListening = false;
+    updateVoiceButtonState();
   } catch (error) {
     appendLog("error", "Voice Error", String(error.message || error));
-  } finally {
     state.voiceListening = false;
     updateVoiceButtonState();
   }

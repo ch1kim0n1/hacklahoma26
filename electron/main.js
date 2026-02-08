@@ -25,6 +25,8 @@ const runtimeState = {
   pendingClarification: false,
   clarificationPrompt: "",
   lastResult: null,
+  voiceCaptureActive: false,
+  voicePhase: "idle",
   voice: {
     requestedInput: true,
     requestedOutput: true,
@@ -89,6 +91,9 @@ function normalizeVoiceState(payload) {
 
 function applyRuntimeResult(result) {
   runtimeState.lastResult = result;
+  if (result.voice_phase) {
+    runtimeState.voicePhase = result.voice_phase;
+  }
   if (typeof result.pending_confirmation === "boolean") {
     runtimeState.pendingConfirmation = result.pending_confirmation;
   }
@@ -137,6 +142,12 @@ function onBridgeLine(rawLine) {
   if (payload.status === "ready" && !bridgeReady) {
     bridgeReady = true;
     applyBridgeReadyPayload(payload);
+  }
+
+  if (payload.status === "voice_phase" && payload.phase) {
+    runtimeState.voicePhase = payload.phase;
+    broadcast("runtime:update", runtimeState);
+    return;
   }
 
   const requestId = String(payload.request_id || "");
@@ -293,8 +304,8 @@ function sendBridgeRequest(payload) {
     bridgeRequestSeq += 1;
     const requestId = `req-${Date.now()}-${bridgeRequestSeq}`;
     const requestPayload = { ...payload, request_id: requestId };
-    // Agent + tool calls can take 20–30+ seconds for complex requests
-    const ms = payload.action === "process_input" ? 60000 : 12000;
+    // Agent + tool calls and voice listen can take 20–60+ seconds
+    const ms = (payload.action === "process_input" || payload.action === "capture_voice_input") ? 60000 : 12000;
     const timeout = setTimeout(() => {
       bridgePending.delete(requestId);
       reject(new Error(`Bridge request timeout for action '${payload.action}' (${requestId})`));
@@ -318,12 +329,39 @@ async function processRuntimeInput(text, source = "text") {
   return result;
 }
 
-async function captureVoiceInput(prompt = "") {
-  const result = await sendBridgeRequest({
-    action: "capture_voice_input",
-    prompt
-  });
+async function captureVoiceInput(prompt = "", options = {}) {
+  const { continuous = false } = options;
+  runtimeState.voiceCaptureActive = true;
+  broadcast("runtime:update", runtimeState);
+
+  let result;
+  try {
+    result = await sendBridgeRequest({
+      action: "capture_voice_input",
+      prompt
+    });
+  } catch (err) {
+    runtimeState.voiceCaptureActive = false;
+    runtimeState.voicePhase = "idle";
+    broadcast("runtime:update", runtimeState);
+    throw err;
+  }
   applyRuntimeResult(result);
+
+  // Continuous voice: auto-start next listen when AI starts speaking (unless voice is off)
+  const canContinue =
+    continuous &&
+    runtimeState.voice?.inputEnabled &&
+    (result.status !== "error" || result.error?.code === "VOICE_INPUT_EMPTY");
+  if (canContinue) {
+    result._continuous = true;
+    runtimeState.voicePhase = "listening";
+    setImmediate(() => captureVoiceInput("", { continuous: true }));
+  } else {
+    runtimeState.voiceCaptureActive = false;
+    runtimeState.voicePhase = "idle";
+  }
+  broadcast("runtime:update", runtimeState);
   return result;
 }
 
@@ -405,7 +443,8 @@ function registerIpcHandlers() {
 
   ipcMain.handle("runtime:capture-voice-input", async (_event, payload) => {
     const prompt = String(payload?.prompt || "");
-    return captureVoiceInput(prompt);
+    const continuous = Boolean(payload?.continuous);
+    return captureVoiceInput(prompt, { continuous });
   });
 
   ipcMain.handle("runtime:confirm", async (_event, payload) => {

@@ -145,7 +145,8 @@ def main() -> int:
             return
 
         try:
-            ok = voice_controller.speak(text, blocking=False)
+            # Block until TTS finishes so we don't listen to ourselves
+            ok = voice_controller.speak(text, blocking=True)
             if not ok:
                 result.setdefault("warnings", []).append("VOICE_OUTPUT_FAILED")
         except Exception as exc:
@@ -238,6 +239,7 @@ def main() -> int:
 
                 prompt = str(payload.get("prompt", "")).strip()
                 try:
+                    _write_json({"status": "voice_phase", "phase": "listening"})
                     if prompt and voice_output_enabled:
                         voice_controller.speak(prompt, blocking=False)
                     transcript = voice_controller.listen(
@@ -257,6 +259,17 @@ def main() -> int:
                     continue
 
                 if not transcript:
+                    # 15 sec no speech: terminate
+                    if voice_controller and voice_controller.stt_startup_timeout:
+                        _write_json(
+                            _build_error(
+                                message="No speech for 15 seconds. Shutting down.",
+                                code="VOICE_STARTUP_TIMEOUT",
+                                request_id=request_id,
+                                extra={**_runtime_state(runtime), "voice": _voice_state()},
+                            )
+                        )
+                        sys.exit(0)
                     stt_error = voice_controller.last_stt_error if voice_controller else ""
                     if stt_error:
                         _write_json(
@@ -294,9 +307,13 @@ def main() -> int:
                     continue
 
                 try:
+                    # Stop any ongoing TTS so new voice input takes priority
+                    voice_controller.stop()
+                    _write_json({"status": "voice_phase", "phase": "processing"})
                     result = runtime.handle_input(transcript, source="voice")
                     result["transcript"] = transcript
                     result["voice"] = _voice_state()
+                    _write_json({"status": "voice_phase", "phase": "speaking"})
                     _speak_response(result)
                     if request_id is not None:
                         result["request_id"] = request_id
