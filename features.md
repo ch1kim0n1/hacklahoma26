@@ -1,9 +1,9 @@
-Below is a **clean, MVP-aligned feature list** for **PixelLink**.
+Below is a **clean, MVP-aligned feature list** for **Maes**.
 Each feature is **explicit**, **implementable**, and **demo-safe**.
 
 ---
 
-## PixelLink — Feature List
+## Maes — Feature List
 
 ### Core Accessibility
 

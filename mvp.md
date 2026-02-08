@@ -1,6 +1,6 @@
-# PixelLink — MVP Implementation Guide (`mvp.md`)
+# Maes — MVP Implementation Guide (`mvp.md`)
 
-This document defines the **Minimum Viable Product (MVP)** for PixelLink and provides **concrete implementation guidance** for each subsystem.
+This document defines the **Minimum Viable Product (MVP)** for Maes and provides **concrete implementation guidance** for each subsystem.
 
 The goal of the MVP is to demonstrate:
 
@@ -17,7 +17,7 @@ This is **not** a prototype spec. This is an **executable system definition**.
 ### What the MVP MUST Prove
 
 * A user can express intent in natural language
-* PixelLink can translate intent into OS actions
+* Maes can translate intent into OS actions
 * The system operates safely and locally
 * One accessibility persona can complete a real task end-to-end
 
@@ -330,7 +330,7 @@ Create one persona:
 
 * Specific disability
 * Specific limitation
-* Clear benefit from PixelLink
+* Clear benefit from Maes
 
 ### Example
 
@@ -363,7 +363,7 @@ Provide transparency and debuggability.
 
 ## 14. MVP Completion Checklist
 
-PixelLink MVP is complete when:
+Maes MVP is complete when:
 
 * One OS is fully supported
 * One persona workflow works end-to-end
