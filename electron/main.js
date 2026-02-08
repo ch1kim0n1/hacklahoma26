@@ -13,7 +13,8 @@ let launcherWindow = null;
 let bridgeProcess = null;
 let bridgeBuffer = "";
 let bridgeReady = false;
-let bridgePending = [];
+let bridgePending = new Map();
+let bridgeRequestSeq = 0;
 let isQuitting = false;
 
 const runtimeState = {
@@ -24,6 +25,13 @@ const runtimeState = {
   pendingClarification: false,
   clarificationPrompt: "",
   lastResult: null,
+  voice: {
+    requestedInput: true,
+    requestedOutput: true,
+    inputEnabled: false,
+    outputEnabled: false,
+    errors: {}
+  },
   permissionProfile: {
     open_app: true,
     focus_app: true,
@@ -59,6 +67,19 @@ function broadcast(channel, payload) {
   });
 }
 
+function normalizeVoiceState(payload) {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  return {
+    requestedInput: payload.requestedInput ?? payload.requested_input ?? runtimeState.voice.requestedInput,
+    requestedOutput: payload.requestedOutput ?? payload.requested_output ?? runtimeState.voice.requestedOutput,
+    inputEnabled: payload.inputEnabled ?? payload.input_enabled ?? runtimeState.voice.inputEnabled,
+    outputEnabled: payload.outputEnabled ?? payload.output_enabled ?? runtimeState.voice.outputEnabled,
+    errors: payload.errors && typeof payload.errors === "object" ? payload.errors : runtimeState.voice.errors
+  };
+}
+
 function applyRuntimeResult(result) {
   runtimeState.lastResult = result;
   if (typeof result.pending_confirmation === "boolean") {
@@ -68,6 +89,27 @@ function applyRuntimeResult(result) {
     runtimeState.pendingClarification = result.pending_clarification;
   }
   runtimeState.clarificationPrompt = result.clarification_prompt || "";
+  const normalizedVoice = normalizeVoiceState(result.voice);
+  if (normalizedVoice) {
+    runtimeState.voice = {
+      ...runtimeState.voice,
+      ...normalizedVoice
+    };
+  }
+  broadcast("runtime:update", runtimeState);
+}
+
+function applyBridgeReadyPayload(payload) {
+  runtimeState.backend = "online";
+  runtimeState.dryRun = Boolean(payload.dry_run);
+  runtimeState.speed = Number(payload.speed || 1.0);
+  const normalizedVoice = normalizeVoiceState(payload.voice);
+  if (normalizedVoice) {
+    runtimeState.voice = {
+      ...runtimeState.voice,
+      ...normalizedVoice
+    };
+  }
   broadcast("runtime:update", runtimeState);
 }
 
@@ -87,28 +129,31 @@ function onBridgeLine(rawLine) {
 
   if (payload.status === "ready" && !bridgeReady) {
     bridgeReady = true;
-    runtimeState.backend = "online";
-    runtimeState.dryRun = Boolean(payload.dry_run);
-    runtimeState.speed = Number(payload.speed || 1.0);
-    broadcast("runtime:update", runtimeState);
+    applyBridgeReadyPayload(payload);
   }
 
-  if (bridgePending.length > 0) {
-    const pending = bridgePending.shift();
+  const requestId = String(payload.request_id || "");
+  if (requestId && bridgePending.has(requestId)) {
+    const pending = bridgePending.get(requestId);
+    bridgePending.delete(requestId);
     clearTimeout(pending.timeout);
     pending.resolve(payload);
     return;
+  }
+
+  if (payload.status === "error" && payload.error) {
+    broadcast("runtime:bridge-error", payload);
   }
 
   applyRuntimeResult(payload);
 }
 
 function failPendingRequests(error) {
-  bridgePending.forEach((pending) => {
+  bridgePending.forEach((pending, requestId) => {
     clearTimeout(pending.timeout);
     pending.reject(error);
+    bridgePending.delete(requestId);
   });
-  bridgePending = [];
 }
 
 function getPythonCommandCandidates() {
@@ -159,9 +204,7 @@ function spawnBridge(command) {
               clearTimeout(timeout);
               bridgeProcess = child;
               bridgeReady = true;
-              runtimeState.backend = "online";
-              runtimeState.dryRun = Boolean(payload.dry_run);
-              runtimeState.speed = Number(payload.speed || 1.0);
+              applyBridgeReadyPayload(payload);
               setupBridgeProcessListeners(child);
               resolve();
               continue;
@@ -240,18 +283,21 @@ function sendBridgeRequest(payload) {
   }
 
   return new Promise((resolve, reject) => {
+    bridgeRequestSeq += 1;
+    const requestId = `req-${Date.now()}-${bridgeRequestSeq}`;
+    const requestPayload = { ...payload, request_id: requestId };
     const timeout = setTimeout(() => {
-      bridgePending = bridgePending.filter((item) => item.resolve !== resolve);
-      reject(new Error(`Bridge request timeout for action '${payload.action}'`));
+      bridgePending.delete(requestId);
+      reject(new Error(`Bridge request timeout for action '${payload.action}' (${requestId})`));
     }, 12000);
 
-    bridgePending.push({ resolve, reject, timeout });
+    bridgePending.set(requestId, { resolve, reject, timeout });
 
     try {
-      bridgeProcess.stdin.write(`${JSON.stringify(payload)}\n`);
+      bridgeProcess.stdin.write(`${JSON.stringify(requestPayload)}\n`);
     } catch (error) {
       clearTimeout(timeout);
-      bridgePending = bridgePending.filter((item) => item.resolve !== resolve);
+      bridgePending.delete(requestId);
       reject(error);
     }
   });
@@ -259,6 +305,15 @@ function sendBridgeRequest(payload) {
 
 async function processRuntimeInput(text, source = "text") {
   const result = await sendBridgeRequest({ action: "process_input", text, source });
+  applyRuntimeResult(result);
+  return result;
+}
+
+async function captureVoiceInput(prompt = "") {
+  const result = await sendBridgeRequest({
+    action: "capture_voice_input",
+    prompt
+  });
   applyRuntimeResult(result);
   return result;
 }
@@ -339,6 +394,11 @@ function registerIpcHandlers() {
     return processRuntimeInput(text, source);
   });
 
+  ipcMain.handle("runtime:capture-voice-input", async (_event, payload) => {
+    const prompt = String(payload?.prompt || "");
+    return captureVoiceInput(prompt);
+  });
+
   ipcMain.handle("runtime:confirm", async (_event, payload) => {
     const source = String(payload?.source || "text");
     return processRuntimeInput("confirm", source);
@@ -357,8 +417,17 @@ function registerIpcHandlers() {
     const response = await sendBridgeRequest({
       action: "update_preferences",
       speed,
-      permission_profile: permissionProfile
+      permission_profile: permissionProfile,
+      voice_output_enabled: payload?.voiceOutputEnabled,
+      voice_input_enabled: payload?.voiceInputEnabled
     });
+    const normalizedVoice = normalizeVoiceState(response.voice);
+    if (normalizedVoice) {
+      runtimeState.voice = {
+        ...runtimeState.voice,
+        ...normalizedVoice
+      };
+    }
     broadcast("runtime:update", runtimeState);
     return response;
   });
@@ -421,4 +490,3 @@ app.on("before-quit", async () => {
   isQuitting = true;
   await shutdownBridge();
 });
-

@@ -1,7 +1,9 @@
 import re
+import logging
 
 from core.nlu.intents import Intent
 
+logger = logging.getLogger(__name__)
 
 WEBSITE_ALIASES = {
     "youtube": "https://www.youtube.com",
@@ -37,7 +39,6 @@ def _extract_after_keywords(original: str, lowered: str, keywords: list[str]) ->
         if extracted:
             return extracted
     return None
-
 
 def _normalized_domain_url(raw: str) -> str | None:
     match = re.search(r"([a-z0-9-]+\.(?:com|org|net|io|ai|dev|app|edu)(?:/[^\s]*)?)", raw.lower())
