@@ -49,12 +49,19 @@ const runtimeState = {
     send_email: true,
     send_message: true,
     wait: true,
-    mcp_create_reminder: true,
-    mcp_create_note: true,
-    mcp_list_reminders: true,
-    mcp_list_notes: true,
-    mcp_get_events: true,
-    mcp_create_event: true,
+    reminders_create_reminder: true,
+    reminders_list_lists: true,
+    reminders_list_reminders: true,
+    notes_create_note: true,
+    notes_list_folders: true,
+    notes_list_notes: true,
+    gmail_list_messages: true,
+    gmail_get_message: true,
+    gmail_send_message: true,
+    calendar_list_events: true,
+    calendar_create_event: true,
+    calendar_delete_event: true,
+    gmail_read_first: true,
     autofill_login: true
   }
 };
@@ -286,10 +293,12 @@ function sendBridgeRequest(payload) {
     bridgeRequestSeq += 1;
     const requestId = `req-${Date.now()}-${bridgeRequestSeq}`;
     const requestPayload = { ...payload, request_id: requestId };
+    // Agent + tool calls can take 20–30+ seconds for complex requests
+    const ms = payload.action === "process_input" ? 60000 : 12000;
     const timeout = setTimeout(() => {
       bridgePending.delete(requestId);
       reject(new Error(`Bridge request timeout for action '${payload.action}' (${requestId})`));
-    }, 12000);
+    }, ms);
 
     bridgePending.set(requestId, { resolve, reject, timeout });
 

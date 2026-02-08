@@ -1,7 +1,27 @@
 import json
 import importlib
+import os
 import sys
 from pathlib import Path
+
+
+def get_plugin_config(plugins_dir: str | Path) -> dict:
+    """Build plugin user_config with credentials from env or default credentials.json."""
+    root = Path(plugins_dir).resolve().parent
+    default_creds = str(root / "credentials.json") if (root / "credentials.json").exists() else ""
+    return {
+        "reminders-mcp": {},
+        "notes-mcp": {},
+        "calendar-mcp": (
+            {"credentials_path": os.getenv("PIXELINK_CALENDAR_CREDENTIALS_PATH") or default_creds, "token_path": os.getenv("PIXELINK_CALENDAR_TOKEN_PATH") or str(root / "token.json")}
+            if (os.getenv("PIXELINK_CALENDAR_CREDENTIALS_PATH") or default_creds) else {}
+        ),
+        "gmail-mcp": (
+            {"credentials_path": os.getenv("PIXELINK_GMAIL_CREDENTIALS_PATH") or default_creds, "token_path": os.getenv("PIXELINK_GMAIL_TOKEN_PATH") or str(root / "token_gmail.json")}
+            if (os.getenv("PIXELINK_GMAIL_CREDENTIALS_PATH") or default_creds) else {}
+        ),
+    }
+
 
 class PluginAPI:
     def __init__(self, plugin_config, tools):
