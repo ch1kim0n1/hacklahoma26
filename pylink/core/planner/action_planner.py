@@ -176,7 +176,7 @@ class ActionPlanner:
             }
             steps.append(
                 ActionStep(
-                    "mcp_create_reminder",
+                    "reminders_create_reminder",
                     params,
                     False,
                     f"Create reminder '{params['name']}' in {params['list_name']}",
@@ -191,10 +191,94 @@ class ActionPlanner:
             }
             steps.append(
                 ActionStep(
-                    "mcp_create_note",
+                    "notes_create_note",
                     params,
                     False,
                     f"Create note '{params['title']}' in {params['folder_name']}",
+                )
+            )
+
+        # Plugin tools - use tool name directly for generic dispatch
+        elif name == "list_reminder_lists":
+            steps.append(ActionStep("reminders_list_lists", {}, False, "List reminder lists"))
+        elif name == "list_reminders":
+            steps.append(
+                ActionStep(
+                    "reminders_list_reminders",
+                    {"list_name": intent.entities.get("list_name", "Reminders")},
+                    False,
+                    "List reminders",
+                )
+            )
+        elif name == "list_note_folders":
+            steps.append(ActionStep("notes_list_folders", {}, False, "List note folders"))
+        elif name == "list_notes":
+            steps.append(
+                ActionStep(
+                    "notes_list_notes",
+                    {"folder_name": intent.entities.get("folder_name", "Notes")},
+                    False,
+                    "List notes",
+                )
+            )
+        elif name == "gmail_list_messages":
+            params = {"max_results": int(intent.entities.get("max_results", 10))}
+            if intent.entities.get("label_ids"):
+                params["label_ids"] = intent.entities["label_ids"]
+            steps.append(ActionStep("gmail_list_messages", params, False, "List Gmail messages"))
+        elif name == "gmail_get_message":
+            steps.append(
+                ActionStep(
+                    "gmail_get_message",
+                    {"message_id": intent.entities.get("message_id", "")},
+                    False,
+                    "Get Gmail message",
+                )
+            )
+        elif name == "gmail_read_first":
+            steps.append(ActionStep("gmail_read_first", {}, False, "Read most recent email"))
+        elif name == "gmail_send_email":
+            steps.append(
+                ActionStep(
+                    "gmail_send_message",
+                    {
+                        "to": intent.entities.get("to", ""),
+                        "subject": intent.entities.get("subject", "No subject"),
+                        "body": intent.entities.get("body", ""),
+                    },
+                    False,
+                    "Send Gmail email",
+                )
+            )
+        elif name == "calendar_list_events":
+            steps.append(
+                ActionStep(
+                    "calendar_list_events",
+                    {"max_results": int(intent.entities.get("max_results", 10))},
+                    False,
+                    "List calendar events",
+                )
+            )
+        elif name == "calendar_create_event":
+            steps.append(
+                ActionStep(
+                    "calendar_create_event",
+                    {
+                        "summary": intent.entities.get("summary", ""),
+                        "start_iso": intent.entities.get("start_iso", ""),
+                        "end_iso": intent.entities.get("end_iso", ""),
+                    },
+                    False,
+                    "Create calendar event",
+                )
+            )
+        elif name == "calendar_delete_event":
+            steps.append(
+                ActionStep(
+                    "calendar_delete_event",
+                    {"event_id": intent.entities.get("event_id", "")},
+                    False,
+                    "Delete calendar event",
                 )
             )
 

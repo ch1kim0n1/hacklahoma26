@@ -4,12 +4,22 @@ import re
 from dataclasses import asdict
 from typing import Any
 
+from core.agent import run_agent
 from core.context.session import SessionContext
 from core.executor.engine import ExecutionEngine
 from core.nlu.intents import Intent
-from core.nlu.parser import parse_intent
+from core.nlu.llm_brain import parse_with_llm, respond_with_llm
 from core.planner.action_planner import ActionPlanner
 from core.safety.guard import KillSwitch, SafetyGuard
+
+# Intents that benefit from the agent's dynamic tool calling (multi-step reasoning)
+AGENT_INTENTS = frozenset({
+    "unknown",
+    "gmail_list_messages", "gmail_get_message", "gmail_send_email", "gmail_read_first",
+    "calendar_list_events", "calendar_create_event", "calendar_delete_event",
+    "create_reminder", "list_reminder_lists", "list_reminders",
+    "create_note", "list_note_folders", "list_notes",
+})
 
 
 DEFAULT_PERMISSION_PROFILE = {
@@ -29,12 +39,20 @@ DEFAULT_PERMISSION_PROFILE = {
     "send_email": True,
     "send_message": True,
     "wait": True,
-    "mcp_create_reminder": True,
-    "mcp_create_note": True,
-    "mcp_list_reminders": True,
-    "mcp_list_notes": True,
-    "mcp_get_events": True,
-    "mcp_create_event": True,
+    # MCP plugin tools
+    "reminders_create_reminder": True,
+    "reminders_list_lists": True,
+    "reminders_list_reminders": True,
+    "notes_create_note": True,
+    "notes_list_folders": True,
+    "notes_list_notes": True,
+    "gmail_list_messages": True,
+    "gmail_get_message": True,
+    "gmail_send_message": True,
+    "calendar_list_events": True,
+    "calendar_create_event": True,
+    "calendar_delete_event": True,
+    "gmail_read_first": True,
     "autofill_login": True,
 }
 
@@ -89,16 +107,43 @@ class PixelLinkRuntime:
         if self.session.pending_clarification:
             return self._handle_clarification(cleaned_text, source)
 
-        intent = parse_intent(cleaned_text, self.session)
+        try:
+            context = {"last_intent": self.session.history[-1].get("intent") if self.session.history else None}
+            intent = parse_with_llm(cleaned_text, context)
+        except Exception:
+            intent = Intent(name="unknown", entities={"text": cleaned_text}, confidence=0.0, raw_text=cleaned_text)
+
         self.session.record_intent(intent.name, cleaned_text)
 
         if self.session.pending_steps:
             return self._handle_pending(intent.name, source)
 
+        # Use the dynamic agent for tool-heavy intents (email, calendar, reminders, notes)
+        # so it can reason and call tools in sequence (e.g. list emails → get 2nd → return subject)
+        if intent.name in AGENT_INTENTS and self.mcp_tools:
+            try:
+                agent_response = run_agent(cleaned_text, self.mcp_tools)
+                if agent_response:
+                    return self._response(
+                        "completed",
+                        agent_response,
+                        source=source,
+                        intent=intent,
+                    )
+            except Exception as exc:
+                pass  # Fall through to intent-specific handling
+
         if intent.name == "unknown":
+            message = "Sorry, I didn't understand that."
+            try:
+                prev = self.session.history[-2] if len(self.session.history) >= 2 else None
+                context = {"last_intent": prev.get("intent") if prev else None}
+                message = respond_with_llm(cleaned_text, context)
+            except Exception:
+                pass  # Fall back to static message if LLM fails or is not configured
             return self._response(
                 "unknown",
-                "Sorry, I didn't understand that.",
+                message,
                 source=source,
                 intent=intent,
                 suggestions=[
@@ -249,8 +294,9 @@ class PixelLinkRuntime:
                     search_query = intent.entities.get("query", "")
                     self.session.add_browsing_entry(url, search_query=search_query)
 
-        # Handle MCP async actions
-        if any(step.action.startswith("mcp_") for step in steps):
+        # Handle MCP plugin actions (async tools)
+        mcp_actions = {"gmail_read_first"} | set(self.mcp_tools)
+        if any(step.action in mcp_actions for step in steps):
             import asyncio
             result = asyncio.run(self._execute_mcp_steps(steps))
             if result.get("error"):
@@ -341,18 +387,31 @@ class PixelLinkRuntime:
         """Execute MCP tool calls asynchronously."""
         try:
             for step in steps:
-                if step.action == "mcp_create_reminder":
-                    tool = self.mcp_tools.get("reminders_create_reminder")
-                    if not tool:
-                        return {"error": "Reminders tool not available"}
-                    result = await tool(**step.params)
-                    return {"message": f"Created reminder '{result['name']}' in list '{result['list']}'"}
-                elif step.action == "mcp_create_note":
-                    tool = self.mcp_tools.get("notes_create_note")
-                    if not tool:
-                        return {"error": "Notes tool not available"}
-                    result = await tool(**step.params)
-                    return {"message": f"Created note '{result['title']}' in folder '{result['folder']}'"}
+                if step.action == "gmail_read_first":
+                    # Synthetic: list(1) then get first message
+                    list_fn = self.mcp_tools.get("gmail_list_messages")
+                    get_fn = self.mcp_tools.get("gmail_get_message")
+                    if not list_fn or not get_fn:
+                        return {"error": "Gmail tools not available"}
+                    messages = await list_fn(max_results=1)
+                    if not messages:
+                        return {"message": "No emails found."}
+                    msg_id = messages[0].get("id")
+                    if not msg_id:
+                        return {"message": "Could not get email."}
+                    result = await get_fn(message_id=msg_id)
+                    return {"message": _format_mcp_dict_result("gmail_get_message", result)}
+
+                tool = self.mcp_tools.get(step.action)
+                if not tool:
+                    continue
+                result = await tool(**step.params)
+                # Format user-friendly message from tool result
+                if isinstance(result, list):
+                    return {"message": _format_mcp_list_result(step.action, result)}
+                if isinstance(result, dict):
+                    return {"message": _format_mcp_dict_result(step.action, result)}
+                return {"message": str(result)}
             return {"message": "Task completed"}
         except Exception as e:
             return {"error": f"MCP execution failed: {str(e)}"}
@@ -403,6 +462,35 @@ class PixelLinkRuntime:
             "history_count": len(self.session.history),
             "suggestions": suggestions or [],
         }
+
+
+def _format_mcp_list_result(action: str, items: list) -> str:
+    """Format MCP list results for display."""
+    if not items:
+        return "No items found."
+    if action == "gmail_list_messages":
+        return f"Found {len(items)} email(s). Say 'read first email' or 'read email' to open one."
+    if action == "calendar_list_events":
+        lines = [f"• {e.get('summary', 'No title')} at {e.get('start', '?')}" for e in items[:5]]
+        return "\n".join(lines) if lines else "No upcoming events."
+    if action in ("reminders_list_lists", "notes_list_folders"):
+        return "Available: " + ", ".join(str(x) for x in items[:15])
+    if action in ("reminders_list_reminders", "notes_list_notes"):
+        return "Found: " + ", ".join(str(x) for x in items[:10])
+    return f"Found {len(items)} item(s)."
+
+
+def _format_mcp_dict_result(action: str, result: dict) -> str:
+    """Format MCP dict results for display."""
+    if action == "gmail_get_message":
+        return f"From: {result.get('from', '?')}\nSubject: {result.get('subject', '?')}\n{result.get('snippet', result.get('body', ''))[:500]}"
+    if action in ("reminders_create_reminder", "notes_create_note"):
+        return f"Created '{result.get('name', result.get('title', '?'))}' successfully."
+    if action == "calendar_create_event":
+        return f"Event created: {result.get('htmlLink', 'Done')}"
+    if action == "gmail_send_message":
+        return "Email sent."
+    return str(result)
 
 
 def _clean_clarified_target(value: str) -> str:

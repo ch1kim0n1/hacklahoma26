@@ -7,12 +7,18 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from core.runtime.orchestrator import DEFAULT_PERMISSION_PROFILE, PixelLinkRuntime
-
 # Add parent directory to path to import bridge
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from bridge import load_plugins
+
+# Load credentials at startup - .env from repo root and pylink/
+from dotenv import load_dotenv
+
+load_dotenv(ROOT / ".env")
+load_dotenv(ROOT / "pylink" / ".env")
+
+from core.runtime.orchestrator import DEFAULT_PERMISSION_PROFILE, PixelLinkRuntime
+from bridge import get_plugin_config, load_plugins
 
 
 def _read_json_line() -> dict[str, Any] | None:
@@ -80,24 +86,7 @@ def main() -> int:
     requested_voice_output = _as_bool(os.getenv("PIXELINK_VOICE_OUTPUT"), default=True)
     requested_voice_input = _as_bool(os.getenv("PIXELINK_VOICE_INPUT"), default=True)
 
-    calendar_credentials = os.getenv("PIXELINK_CALENDAR_CREDENTIALS_PATH")
-    calendar_token = os.getenv("PIXELINK_CALENDAR_TOKEN_PATH")
-    gmail_credentials = os.getenv("PIXELINK_GMAIL_CREDENTIALS_PATH")
-    gmail_token = os.getenv("PIXELINK_GMAIL_TOKEN_PATH")
-
-    # Load MCP plugins
-    user_config: dict[str, dict[str, Any]] = {
-        "reminders-mcp": {},
-        "notes-mcp": {},
-        "calendar-mcp": {
-            **({"credentials_path": calendar_credentials} if calendar_credentials else {}),
-            **({"token_path": calendar_token} if calendar_token else {}),
-        },
-        "gmail-mcp": {
-            **({"credentials_path": gmail_credentials} if gmail_credentials else {}),
-            **({"token_path": gmail_token} if gmail_token else {}),
-        },
-    }
+    user_config = get_plugin_config(ROOT / "plugins")
     try:
         mcp_tools = load_plugins(ROOT / "plugins", user_config)
         tool_map = {tool["name"]: tool["fn"] for tool in mcp_tools}

@@ -230,6 +230,20 @@ def _parse_send_text(original: str, lowered: str) -> Intent | None:
 
 
 def parse_intent(text: str, context=None) -> Intent:
+    """Parse intent using the LLM. Delegates to parse_with_llm for AI-only parsing."""
+    try:
+        from core.nlu.llm_brain import parse_with_llm
+
+        ctx = {}
+        if context and hasattr(context, "history") and context.history:
+            ctx["last_intent"] = context.history[-1].get("intent")
+        return parse_with_llm(text, ctx if ctx else None)
+    except Exception:
+        return Intent(name="unknown", entities={"text": text}, confidence=0.0, raw_text=text)
+
+
+def _parse_intent_regex(text: str, context=None) -> Intent:
+    """Legacy regex-based parser - kept for reference/testing. Use parse_intent (LLM) instead."""
     lowered = text.lower().strip()
     cleaned = re.sub(r"\b(can you|could you|please|the|a|an|for me)\b", "", lowered).strip()
 
@@ -326,11 +340,21 @@ def parse_intent(text: str, context=None) -> Intent:
         }
         return Intent(name="reply_email", entities=entities, confidence=0.82, raw_text=text)
 
-    if re.search(r"\b(open|launch|start|run|fire up|boot)\b", cleaned):
-        app = _extract_after_keywords(text, lowered, ["open ", "launch ", "start ", "run ", "fire up ", "boot "])
-        if app:
-            app = re.sub(r"\s+(app|application)$", "", app.strip(), flags=re.IGNORECASE)
-            return Intent(name="open_app", entities={"app": app}, confidence=0.88, raw_text=text)
+    # Open/focus app - flexible triggers for casual speech ("open Safari", "get into Safari", "show me Notes")
+    _OPEN_KEYWORDS = [
+        "open ", "launch ", "start ", "run ", "fire up ", "boot ", "open up ",
+        "get into ", "get me ", "show me ", "take me to ", "let me see ",
+        "bring up ", "need to open ", "want to open ", "wanna open ",
+        "need to launch ", "want to launch ", "need ", "want ", "wanna ",
+    ]
+    app = _extract_after_keywords(text, lowered, _OPEN_KEYWORDS)
+    if app:
+        # Strip trailing "app/application" and filter out non-app extractions
+        app = re.sub(r"\s+(app|application)$", "", app.strip(), flags=re.IGNORECASE)
+        # Skip if it looks like a sentence, not an app name (e.g. "to send an email")
+        if app and not re.match(r"^(to|the|a|an)\s+", app, flags=re.IGNORECASE) and len(app.split()) <= 3:
+            if re.search(r"\b(open|launch|start|run|fire up|boot|get into|show me|take me to|need|want|wanna)\b", cleaned):
+                return Intent(name="open_app", entities={"app": app}, confidence=0.88, raw_text=text)
 
     if re.search(r"\b(focus|switch to|go to|bring up|activate)\b", cleaned):
         app = _extract_after_keywords(text, lowered, ["focus ", "switch to ", "go to ", "bring up ", "activate "])

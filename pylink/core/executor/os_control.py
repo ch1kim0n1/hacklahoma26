@@ -4,13 +4,56 @@ from typing import Optional
 from urllib.parse import urlparse
 
 
+# Canonical macOS app names (proper casing as used by Launch Services / AppleScript)
+# Maps lowercase/casual names to the name macOS expects
+MACOS_APP_NAMES = {
+    "safari": "Safari",
+    "chrome": "Google Chrome",
+    "firefox": "Mozilla Firefox",
+    "notes": "Notes",
+    "mail": "Mail",
+    "calendar": "Calendar",
+    "messages": "Messages",
+    "terminal": "Terminal",
+    "iterm": "iTerm",
+    "iterm2": "iTerm",
+    "finder": "Finder",
+    "vscode": "Visual Studio Code",
+    "code": "Visual Studio Code",
+    "slack": "Slack",
+    "spotify": "Spotify",
+    "music": "Music",
+    "itunes": "Music",
+    "photos": "Photos",
+    "reminders": "Reminders",
+    "maps": "Maps",
+    "facetime": "FaceTime",
+    "zoom": "Zoom",
+    "teams": "Microsoft Teams",
+    "outlook": "Microsoft Outlook",
+    "word": "Microsoft Word",
+    "excel": "Microsoft Excel",
+    "powerpoint": "Microsoft PowerPoint",
+    "notion": "Notion",
+    "discord": "Discord",
+    "browser": "Safari",  # "the browser" -> Safari on macOS
+}
+
+
 class OSController:
     # Common app name whitelist for validation (can be extended)
     COMMON_APPS = {
         "notes", "mail", "safari", "chrome", "firefox", "terminal", "iterm",
         "vscode", "code", "slack", "spotify", "calendar", "messages",
-        "notepad", "word", "excel", "powerpoint", "outlook"
+        "notepad", "word", "excel", "powerpoint", "outlook", "finder", "music",
     }
+
+    def _normalize_macos_app_name(self, app_name: str) -> str:
+        """Return the proper macOS app name for opening/focusing. Handles case and aliases."""
+        if not app_name or not app_name.strip():
+            return app_name
+        key = app_name.strip().lower()
+        return MACOS_APP_NAMES.get(key, app_name.strip())
 
     def _validate_app_name(self, app_name: str) -> None:
         """Validate app name to prevent shell injection"""
@@ -27,20 +70,28 @@ class OSController:
         """Check if an application is currently running."""
         if not app_name:
             return False
-        
-        self._validate_app_name(app_name)
+
         system = platform.system().lower()
-        
+        if system == "darwin":
+            app_name = self._normalize_macos_app_name(app_name)
+
+        self._validate_app_name(app_name)
+
         try:
             if system == "darwin":
-                # Use osascript to check if app is running
+                # Get process list and check case-insensitively (macOS process names vary)
                 result = subprocess.run(
-                    ["osascript", "-e", f'tell application "System Events" to (name of processes) contains "{app_name}"'],
+                    ["osascript", "-e", 'tell application "System Events" to get name of every process'],
                     capture_output=True,
                     text=True,
                     timeout=2,
                 )
-                return result.stdout.strip().lower() == "true"
+                if result.returncode != 0:
+                    return False
+                # Output is comma-separated list like "Safari, Notes, Terminal, ..."
+                processes = [p.strip().strip('"') for p in result.stdout.split(",")]
+                return any(p.lower() == app_name.lower() for p in processes if p)
+
             elif system == "windows":
                 result = subprocess.run(
                     ["tasklist", "/FI", f"IMAGENAME eq {app_name}.exe"],
@@ -72,8 +123,10 @@ class OSController:
         if not app_name:
             raise ValueError("App name is required")
 
+        if platform.system().lower() == "darwin":
+            app_name = self._normalize_macos_app_name(app_name)
         self._validate_app_name(app_name)
-        
+
         # Check if app is already running - if so, just focus it
         if self.is_app_running(app_name):
             try:
@@ -124,8 +177,10 @@ class OSController:
         if not app_name:
             raise ValueError("App name is required")
 
-        self._validate_app_name(app_name)
         system = platform.system().lower()
+        if system == "darwin":
+            app_name = self._normalize_macos_app_name(app_name)
+        self._validate_app_name(app_name)
 
         if system == "darwin":
             try:
@@ -157,8 +212,10 @@ class OSController:
     def close_app(self, app_name: str) -> None:
         if not app_name:
             raise ValueError("App name is required")
-        self._validate_app_name(app_name)
         system = platform.system().lower()
+        if system == "darwin":
+            app_name = self._normalize_macos_app_name(app_name)
+        self._validate_app_name(app_name)
         try:
             if system == "darwin":
                 subprocess.run(
@@ -229,109 +286,88 @@ class OSController:
         safe_content = _escape_applescript_text(content)
 
         script = f'''
-set targetQuery to "{safe_target}"
-set messageText to "{safe_content}"
-set matchedBuddy to missing value
-set resolvedHandle to ""
+        set targetQuery to "{safe_target}"
+        set messageText to "{safe_content}"
+        set matchedBuddy to missing value
+        set resolvedHandle to ""
 
-on normalize_phone(rawValue)
-    set cleaned to do shell script "echo " & quoted form of rawValue & " | tr -cd '0-9+'"
-    return cleaned
-end normalize_phone
+        on normalize_phone(rawValue)
+            set cleaned to do shell script "echo " & quoted form of rawValue & " | tr -cd '0-9+'"
+            return cleaned
+        end normalize_phone
 
-on find_contact_handle(nameQuery)
-    tell application "Contacts"
-        set queryTokens to words of nameQuery
-        repeat with p in people
-            set personName to ""
-            try
-                set personName to (name of p as text)
-            end try
-
-            set allTokensMatch to true
-            repeat with tk in queryTokens
-                set tokenText to contents of tk
-                if tokenText is not "" then
-                    ignoring case
-                        if personName does not contain tokenText then
-                            set allTokensMatch to false
-                            exit repeat
-                        end if
-                    end ignoring
-                end if
-            end repeat
-
-            if allTokensMatch then
+        on find_contact_handle(nameQuery)
+            tell application "Contacts" to launch
+            tell application "Contacts"
+                ignoring case
+                    set matches to (every person whose name contains nameQuery)
+                end ignoring
+                if (count of matches) is 0 then return ""
+                set p to item 1 of matches
                 try
                     set phoneValue to value of first phone of p as text
-                    if phoneValue is not "" then
-                        return my normalize_phone(phoneValue)
-                    end if
+                    if phoneValue is not "" then return my normalize_phone(phoneValue)
                 end try
                 try
                     set emailValue to value of first email of p as text
-                    if emailValue is not "" then
-                        return emailValue
-                    end if
+                    if emailValue is not "" then return emailValue
                 end try
-            end if
-        end repeat
-    end tell
-    return ""
-end find_contact_handle
+            end tell
+            return ""
+        end find_contact_handle
 
-tell application "Messages"
-    activate
-    repeat with svc in services
-        try
-            repeat with b in buddies of svc
-                set buddyName to ""
-                set buddyHandle to ""
-                try
-                    set buddyName to (name of b as text)
-                end try
-                try
-                    set buddyHandle to (handle of b as text)
-                end try
-                ignoring case
-                    if buddyName contains targetQuery or buddyHandle contains targetQuery then
-                        set matchedBuddy to b
-                        exit repeat
-                    end if
-                end ignoring
-            end repeat
-        end try
-        if matchedBuddy is not missing value then exit repeat
-    end repeat
-
-    if matchedBuddy is missing value then
-        set resolvedHandle to my find_contact_handle(targetQuery)
-        if resolvedHandle is not "" then
+        tell application "Messages"
+            activate
             repeat with svc in services
                 try
-                    set maybeBuddy to buddy resolvedHandle of svc
-                    if maybeBuddy is not missing value then
-                        set matchedBuddy to maybeBuddy
-                        exit repeat
-                    end if
+                    repeat with b in buddies of svc
+                        set buddyName to ""
+                        set buddyHandle to ""
+                        try
+                            set buddyName to (name of b as text)
+                        end try
+                        try
+                            set buddyHandle to (handle of b as text)
+                        end try
+                        ignoring case
+                            if buddyName contains targetQuery or buddyHandle contains targetQuery then
+                                set matchedBuddy to b
+                                exit repeat
+                            end if
+                        end ignoring
+                    end repeat
                 end try
+                if matchedBuddy is not missing value then exit repeat
             end repeat
-        end if
-    end if
 
-    if matchedBuddy is missing value then
-        error "No matching Messages contact found for '" & targetQuery & "'. Use a more specific contact name."
-    end if
+            if matchedBuddy is missing value then
+                set resolvedHandle to my find_contact_handle(targetQuery)
+                if resolvedHandle is not "" then
+                    repeat with svc in services
+                        try
+                            set maybeBuddy to buddy resolvedHandle of svc
+                            if maybeBuddy is not missing value then
+                                set matchedBuddy to maybeBuddy
+                                exit repeat
+                            end if
+                        end try
+                    end repeat
+                end if
+            end if
 
-    send messageText to matchedBuddy
-end tell
-'''
+            if matchedBuddy is missing value then
+                error "No matching Messages contact found for '" & targetQuery & "'. Use a more specific contact name."
+            end if
+
+            send messageText to matchedBuddy
+        end tell
+        '''
         try:
             subprocess.run(
                 ["osascript", "-e", script],
                 capture_output=True,
                 text=True,
-                timeout=8,
+                timeout=20,
                 check=True,
             )
         except subprocess.CalledProcessError as e:

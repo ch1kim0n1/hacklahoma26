@@ -16,7 +16,14 @@ from core.runtime.orchestrator import DEFAULT_PERMISSION_PROFILE, PixelLinkRunti
 # Add parent directory to path to import bridge
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT))
-from bridge import load_plugins
+
+# Load credentials at startup
+from dotenv import load_dotenv
+
+load_dotenv(ROOT / ".env")
+load_dotenv(ROOT / "pylink" / ".env")
+
+from bridge import get_plugin_config, load_plugins
 
 
 def _setup_logging() -> None:
@@ -148,24 +155,8 @@ def run_cli_mode() -> None:
     else:
         print(f"⚠ WARNING: Unsupported OS '{system}'. Functionality may be limited.")
 
-    calendar_credentials = os.getenv("PIXELINK_CALENDAR_CREDENTIALS_PATH")
-    calendar_token = os.getenv("PIXELINK_CALENDAR_TOKEN_PATH")
-    gmail_credentials = os.getenv("PIXELINK_GMAIL_CREDENTIALS_PATH")
-    gmail_token = os.getenv("PIXELINK_GMAIL_TOKEN_PATH")
-
-    # Load MCP plugins
-    user_config = {
-        "reminders-mcp": {},
-        "notes-mcp": {},
-        "calendar-mcp": {
-            **({"credentials_path": calendar_credentials} if calendar_credentials else {}),
-            **({"token_path": calendar_token} if calendar_token else {}),
-        },
-        "gmail-mcp": {
-            **({"credentials_path": gmail_credentials} if gmail_credentials else {}),
-            **({"token_path": gmail_token} if gmail_token else {}),
-        },
-    }
+    # Load MCP plugins (credentials from env or credentials.json in repo root)
+    user_config = get_plugin_config(ROOT / "plugins")
     try:
         mcp_tools = load_plugins(ROOT / "plugins", user_config)
         tool_map = {tool["name"]: tool["fn"] for tool in mcp_tools}
