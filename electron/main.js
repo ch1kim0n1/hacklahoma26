@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, screen } = require("electron");
+const { app, BrowserWindow, ipcMain, screen, systemPreferences } = require("electron");
 const { spawn } = require("child_process");
 const path = require("path");
 
@@ -21,6 +21,7 @@ const runtimeState = {
   backend: "offline",
   dryRun: false,
   speed: 1.0,
+  pipelineState: "idle",
   pendingConfirmation: false,
   pendingClarification: false,
   clarificationPrompt: "",
@@ -142,6 +143,9 @@ function normalizeEyeState(payload) {
 
 function applyRuntimeResult(result) {
   runtimeState.lastResult = result;
+  if (result.pipeline_state) {
+    runtimeState.pipelineState = result.pipeline_state;
+  }
   if (typeof result.pending_confirmation === "boolean") {
     runtimeState.pendingConfirmation = result.pending_confirmation;
   }
@@ -204,6 +208,13 @@ function onBridgeLine(rawLine) {
     applyBridgeReadyPayload(payload);
   }
 
+  if (payload.status === "pipeline_state") {
+    runtimeState.pipelineState = payload.state || "idle";
+    broadcast("runtime:pipeline-state", { state: runtimeState.pipelineState });
+    broadcast("runtime:update", runtimeState);
+    return;
+  }
+
   if (payload.status === "voice_model_status") {
     const model = normalizeVoiceModelState(payload.voice_model || payload.model);
     if (model) {
@@ -246,7 +257,9 @@ function classifyBridgeStderrLine(line) {
     text.includes("face_landmarker_graph.cc") ||
     text.includes("gl_context.cc") ||
     text.includes("TensorFlow Lite XNNPACK delegate") ||
-    text.includes("AVCaptureDeviceTypeExternal is deprecated")
+    text.includes("AVCaptureDeviceTypeExternal is deprecated") ||
+    text.includes("Class AVFAudioReceiver is implemented in both") ||
+    text.includes("Class AVFFrameReceiver is implemented in both")
   ) {
     return "ignore";
   }
@@ -396,10 +409,11 @@ function sendBridgeRequest(payload) {
     bridgeRequestSeq += 1;
     const requestId = `req-${Date.now()}-${bridgeRequestSeq}`;
     const requestPayload = { ...payload, request_id: requestId };
+    const timeoutMs = payload.action === "capture_voice_input" || payload.action === "process_input" ? 120000 : 12000;
     const timeout = setTimeout(() => {
       bridgePending.delete(requestId);
       reject(new Error(`Bridge request timeout for action '${payload.action}' (${requestId})`));
-    }, 12000);
+    }, timeoutMs);
 
     bridgePending.set(requestId, { resolve, reject, timeout });
 
@@ -593,6 +607,18 @@ async function shutdownBridge() {
 }
 
 app.whenReady().then(async () => {
+  // Request microphone permission on macOS before starting the bridge
+  if (process.platform === "darwin") {
+    const micStatus = systemPreferences.getMediaAccessStatus("microphone");
+    if (micStatus !== "granted") {
+      try {
+        await systemPreferences.askForMediaAccess("microphone");
+      } catch (_) {
+        // Permission denied or unavailable - bridge will handle gracefully
+      }
+    }
+  }
+
   registerIpcHandlers();
   createMainWindow();
   createLauncherWindow();

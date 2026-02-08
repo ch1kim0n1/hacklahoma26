@@ -45,7 +45,7 @@ class SpeechToText:
     def __init__(
         self,
         model_size: Optional[str] = None,
-        silence_threshold: float = 1.0,
+        silence_threshold: float = 2.0,
         max_duration: float = 30.0,
         device: str = "auto",
         compute_type: str = "int8",

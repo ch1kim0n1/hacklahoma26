@@ -3,7 +3,8 @@ pynput>=1.7.7
 
 # Eye control (optional: for gaze + blink input)
 # Install for eye and blink control; PixelLink runs without these if unavailable.
-opencv-python>=4.8.0
+# Using headless version to avoid FFmpeg conflicts with faster-whisper
+opencv-python-headless>=4.8.0
 mediapipe>=0.10.0
 
 # Voice module dependencies

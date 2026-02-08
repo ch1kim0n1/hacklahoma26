@@ -100,10 +100,25 @@ function setStatus(runtime) {
   const backendOnline = runtime?.backend === "online";
   const waitingConfirm = Boolean(runtime?.pendingConfirmation);
   const waitingClarification = Boolean(runtime?.pendingClarification);
+  const pipelineState = runtime?.pipelineState || "idle";
 
   if (!backendOnline) {
     elements.statusDot.className = "status-dot status-offline";
     elements.statusText.textContent = "Offline";
+    return;
+  }
+
+  // Show pipeline state when not idle
+  const pipelineLabels = {
+    listen: "Listening...",
+    processing: "Processing...",
+    action: "Executing...",
+    output: "Speaking...",
+  };
+
+  if (pipelineState !== "idle" && pipelineLabels[pipelineState]) {
+    elements.statusDot.className = "status-dot status-busy";
+    elements.statusText.textContent = pipelineLabels[pipelineState];
     return;
   }
 
@@ -232,17 +247,33 @@ function updateEyePreview(runtime) {
     `Backend: ${eye.backend || "-"} (${previewStatus})`;
 }
 
+function isPipelineBusy() {
+  const ps = state.runtime?.pipelineState || "idle";
+  return ps === "action" || ps === "output" || ps === "processing";
+}
+
 function updateVoiceButtonState() {
   const backendOnline = state.runtime?.backend === "online";
   const voiceInputEnabled = Boolean(state.runtime?.voice?.inputEnabled);
   const modelLoading = ["loading", "idle"].includes(String(state.runtime?.voice?.model?.state || "").toLowerCase())
     && String(state.runtime?.voice?.model?.stage || "").toLowerCase() !== "ready";
-  const enabled = backendOnline && voiceInputEnabled && !state.voiceListening && !modelLoading;
+  const busy = isPipelineBusy();
+  const enabled = backendOnline && voiceInputEnabled && !state.voiceListening && !modelLoading && !busy;
 
   elements.voiceBtn.disabled = !enabled;
   elements.voiceBtn.classList.toggle("listening", state.voiceListening);
 
-  if (state.voiceListening) {
+  // Also disable command input when pipeline is busy
+  if (elements.commandInput) {
+    elements.commandInput.disabled = busy;
+    elements.commandInput.placeholder = busy ? "Please wait..." : "Type a command...";
+  }
+
+  if (busy) {
+    const ps = state.runtime?.pipelineState || "";
+    const labels = { processing: "Processing...", action: "Executing...", output: "Speaking..." };
+    elements.voiceBtn.textContent = labels[ps] || "Busy...";
+  } else if (state.voiceListening) {
     elements.voiceBtn.textContent = "Listening...";
   } else if (modelLoading && voiceInputEnabled) {
     elements.voiceBtn.textContent = "Model Loading";

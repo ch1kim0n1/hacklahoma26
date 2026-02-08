@@ -54,6 +54,7 @@ DEFAULT_PERMISSION_PROFILE = {
     "browser_fill_form": True,
     "browser_click": True,
     "browser_extract": True,
+    "close_browser": True,
 }
 
 
@@ -96,6 +97,9 @@ class PixelLinkRuntime:
         self._conversational_ai = get_conversational_ai()
         self._use_conversational_mode = True  # Enable conversational AI by default
 
+        # Pre-task announcement callback (called BEFORE execution)
+        self._on_pre_task_announce: Any | None = None
+
         # Initialize file system context in background
         threading.Thread(target=self.session.filesystem.index_files, daemon=True).start()
 
@@ -109,6 +113,26 @@ class PixelLinkRuntime:
                 asyncio.run(self._browser_agent.close())
             except Exception:
                 pass
+
+    def set_pre_task_callback(self, callback: Any) -> None:
+        """Set a callback that fires BEFORE task execution with the announcement message."""
+        self._on_pre_task_announce = callback
+
+    def _close_browser(self, intent: Intent, source: str, pre_message: str = "") -> dict[str, Any]:
+        """Close the browser and clean up."""
+        if self._browser_agent:
+            try:
+                import asyncio
+                asyncio.run(self._browser_agent.close())
+                self._browser_agent = None
+                msg = "Browser closed successfully."
+                if pre_message:
+                    msg = f"{pre_message}\n\n{msg}"
+                return self._response("completed", msg, source=source, intent=intent)
+            except Exception as e:
+                self._browser_agent = None
+                return self._response("error", f"Error closing browser: {e}", source=source, intent=intent)
+        return self._response("completed", "No browser is currently open.", source=source, intent=intent)
 
     def _get_browser_agent(self) -> BrowserAgent:
         """Get or create the browser agent instance."""
@@ -204,11 +228,13 @@ class PixelLinkRuntime:
 
     def _handle_conversational_input(self, cleaned_text: str, source: str) -> dict[str, Any]:
         """Handle user input using conversational AI with clarification and confirmation."""
-        # Build context for conversational AI
+        # Build rich context for conversational AI
         context = {
             "last_intent": self.session.history[-1]["intent"] if self.session.history else None,
             "last_app": self.session.last_app,
             "pending_clarification": self.session.pending_clarification,
+            "recent_history": self.session.history[-10:] if self.session.history else [],
+            "browsing_context": self.session.get_context_summary() if hasattr(self.session, 'get_context_summary') else "",
         }
 
         # Analyze with conversational AI
@@ -281,6 +307,41 @@ class PixelLinkRuntime:
             intent = Intent(name=intent_name, entities=entities, confidence=confidence, raw_text=cleaned_text)
             self.session.record_intent(intent.name, cleaned_text)
 
+            # Close browser intent
+            if intent_name == "close_browser":
+                return self._close_browser(intent, source, user_message)
+
+            # Simple website opening — skip browser-use, use OS open
+            if intent_name == "open_website":
+                url = entities.get("url", "")
+                if url:
+                    # Fire pre-task callback before execution
+                    pre_msg = user_message or f"Opening {url}."
+                    if self._on_pre_task_announce:
+                        try:
+                            self._on_pre_task_announce(pre_msg)
+                        except Exception:
+                            pass
+                    try:
+                        self.executor.os.open_url(url)
+                        self.session.add_browsing_entry(url)
+                        resp = self._response(
+                            "completed",
+                            pre_msg,
+                            source=source,
+                            intent=intent,
+                        )
+                        resp["pre_task_announced"] = True
+                        return resp
+                    except Exception as e:
+                        return self._response(
+                            "error",
+                            f"Failed to open {url}: {e}",
+                            source=source,
+                            intent=intent,
+                        )
+                # No URL — fall through to browser_task handling
+
             # Check if this is a browser task - send to browser-use
             if intent_name.startswith("browser_"):
                 return self._execute_browser_with_confirmation(intent, source, user_message)
@@ -303,6 +364,16 @@ class PixelLinkRuntime:
         """Execute browser action and confirm completion to user."""
         import asyncio
 
+        # Generate pre-task announcement
+        pre_task_msg = pre_message or self._generate_pre_task_message(intent)
+
+        # Fire pre-task callback BEFORE execution so voice speaks first
+        if self._on_pre_task_announce and pre_task_msg:
+            try:
+                self._on_pre_task_announce(pre_task_msg)
+            except Exception:
+                pass
+
         steps = self.planner.plan(intent, self.session, self.guard)
 
         for step in steps:
@@ -310,42 +381,85 @@ class PixelLinkRuntime:
                 try:
                     result = asyncio.run(self._execute_browser_action(step.action, step.params))
 
-                    # Generate completion message using OpenAI
                     success = result.get("success", False)
                     result_msg = result.get("message", "")
-                    completion_message = generate_completion_message(intent.name, success, result_msg)
 
                     if success:
+                        # Use LLM only for success messages
+                        completion_message = generate_completion_message(intent.name, True, result_msg)
                         full_message = f"{pre_message}\n\n{completion_message}" if pre_message else completion_message
-                        return self._response(
+                        full_message = full_message.strip() + "\n\nIs there anything else you'd like me to do?"
+                        resp = self._response(
                             "completed",
-                            full_message.strip(),
+                            full_message,
                             source=source,
                             intent=intent,
                             steps=steps,
                         )
+                        resp["pre_task_message"] = pre_task_msg
+                        resp["pre_task_announced"] = True
+                        return resp
                     else:
-                        return self._response(
+                        # Deterministic error — never use LLM for failures
+                        error_msg = f"Sorry, I ran into an issue: {result_msg}" if result_msg else "Sorry, I ran into an issue and couldn't complete the browser task."
+                        resp = self._response(
                             "error",
-                            completion_message,
+                            error_msg,
                             source=source,
                             intent=intent,
                             steps=steps,
                         )
+                        resp["pre_task_message"] = pre_task_msg
+                        resp["pre_task_announced"] = True
+                        return resp
                 except Exception as e:
-                    error_msg = generate_completion_message(intent.name, False, str(e))
-                    return self._response(
+                    # Deterministic error — never use LLM for exceptions
+                    error_msg = f"Sorry, I ran into an issue: {e}"
+                    resp = self._response(
                         "error",
                         error_msg,
                         source=source,
                         intent=intent,
                         steps=steps,
                     )
+                    resp["pre_task_message"] = pre_task_msg
+                    resp["pre_task_announced"] = True
+                    return resp
 
         return self._response("error", "No browser action to execute.", source=source, intent=intent)
 
+    def _generate_pre_task_message(self, intent: Intent) -> str:
+        """Generate a brief announcement of what's about to happen."""
+        name = intent.name
+        entities = intent.entities or {}
+
+        descriptions = {
+            "open_app": f"Opening {entities.get('app', 'the application')}.",
+            "close_app": f"Closing {entities.get('app', 'the application')}.",
+            "focus_app": f"Switching to {entities.get('app', 'the application')}.",
+            "type_text": "Typing the text you requested.",
+            "search_web": f"Searching the web for '{entities.get('query', '')}'.",
+            "send_text": f"Sending a message to {entities.get('target', 'the recipient')}.",
+            "send_email": "Composing and sending the email.",
+            "reply_email": "Composing the email reply.",
+            "browser_task": f"Working on the browser task: {entities.get('instruction', '')[:60]}.",
+            "browser_fill_form": "Filling out the form in the browser.",
+            "browser_click": f"Clicking on {entities.get('element', 'the element')} in the browser.",
+            "browser_extract": "Extracting content from the page.",
+            "close_browser": "Closing the browser.",
+            "open_website": f"Opening {entities.get('url', 'the website')}.",
+            "login": f"Logging into {entities.get('service', 'the service')}.",
+            "mcp_create_reminder": f"Creating a reminder: {entities.get('name', '')}.",
+            "mcp_create_note": f"Creating a note: {entities.get('title', '')}.",
+        }
+
+        return descriptions.get(name, f"Working on your request: {name}.")
+
     def _execute_intent_with_completion(self, intent: Intent, source: str) -> dict[str, Any]:
         """Execute intent and generate AI completion message."""
+        # Generate pre-task announcement
+        pre_msg = self._generate_pre_task_message(intent)
+
         result = self._execute_intent(intent, source)
 
         # Generate completion message for successful executions
@@ -355,12 +469,16 @@ class PixelLinkRuntime:
                 True,
                 result.get("message", "")
             )
-            result["message"] = success_msg
+            result["message"] = success_msg + "\n\nIs there anything else you'd like me to do?"
 
+        result["pre_task_message"] = pre_msg
         return result
 
     def _process_intent(self, intent: Intent, cleaned_text: str, source: str) -> dict[str, Any]:
         """Process intent after parsing (legacy flow without conversational AI)."""
+
+        if intent.name == "close_browser":
+            return self._close_browser(intent, source)
 
         if intent.name == "check_mood":
             mood_percent = self._current_affection.get("mood_percent", 0.0)

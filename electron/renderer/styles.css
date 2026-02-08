@@ -83,6 +83,16 @@ body {
   background: var(--err);
 }
 
+.status-busy {
+  background: #3b82f6;
+  animation: pulse-busy 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse-busy {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
 .hide-btn {
   border: 1px solid var(--border);
   background: #fff;
