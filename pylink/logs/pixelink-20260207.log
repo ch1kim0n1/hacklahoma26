@@ -1,0 +1,35 @@
+2026-02-07 15:10:09,135 | WARNING | This process is not trusted! Input event monitoring will not be possible until it is added to accessibility clients.
+2026-02-07 15:10:25,650 | WARNING | This process is not trusted! Input event monitoring will not be possible until it is added to accessibility clients.
+2026-02-07 15:11:09,389 | INFO | Intent: open_app | Steps: ['open_app']
+2026-02-07 15:11:09,390 | INFO | Executing step 1/1: open_app
+2026-02-07 15:11:09,407 | ERROR | Failed to execute open_app: Failed to open app 'chrome': Unable to find application named 'chrome'
+2026-02-07 15:11:15,616 | INFO | Intent: open_app | Steps: ['open_app']
+2026-02-07 15:11:15,616 | INFO | Executing step 1/1: open_app
+2026-02-07 15:11:34,266 | INFO | Intent: open_app | Steps: ['open_app']
+2026-02-07 15:11:34,268 | INFO | Executing step 1/1: open_app
+2026-02-07 15:42:57,662 | WARNING | This process is not trusted! Input event monitoring will not be possible until it is added to accessibility clients.
+2026-02-07 15:43:01,782 | INFO | Intent: open_app | Steps: ['open_app']
+2026-02-07 15:43:01,783 | INFO | Executing step 1/1: open_app
+2026-02-07 15:43:12,106 | INFO | Intent: open_app | Steps: ['open_app']
+2026-02-07 15:43:12,107 | INFO | Executing step 1/1: open_app
+2026-02-07 15:43:12,128 | ERROR | Failed to execute open_app: Failed to open app 'youtube in safari': Unable to find application named 'youtube in safari'
+2026-02-07 16:37:57,245 | INFO | TextToSpeech initialized with voice_id=21m00Tcm4TlvDq8ikWAM, model=eleven_turbo_v2_5
+2026-02-07 16:37:57,245 | INFO | VoiceController initialized (TTS=enabled, STT=disabled)
+2026-02-07 16:37:57,245 | INFO | Voice controller initialized
+2026-02-07 16:37:57,282 | WARNING | This process is not trusted! Input event monitoring will not be possible until it is added to accessibility clients.
+2026-02-07 16:37:57,649 | INFO | HTTP Request: POST https://api.elevenlabs.io/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM?output_format=mp3_44100_128 "HTTP/1.1 200 OK"
+2026-02-07 16:38:00,541 | INFO | TTS spoke: PixelLink is ready. How can I help you?
+2026-02-07 16:38:00,742 | INFO | HTTP Request: POST https://api.elevenlabs.io/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM?output_format=mp3_44100_128 "HTTP/1.1 200 OK"
+2026-02-07 16:38:02,600 | INFO | TTS spoke: Goodbye!
+2026-02-07 16:39:11,166 | INFO | TextToSpeech initialized with voice_id=21m00Tcm4TlvDq8ikWAM, model=eleven_turbo_v2_5
+2026-02-07 16:39:11,167 | INFO | VoiceController initialized (TTS=enabled, STT=disabled)
+2026-02-07 16:39:11,167 | INFO | Voice controller initialized
+2026-02-07 16:39:11,201 | WARNING | This process is not trusted! Input event monitoring will not be possible until it is added to accessibility clients.
+2026-02-07 16:39:11,559 | INFO | HTTP Request: POST https://api.elevenlabs.io/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM?output_format=mp3_44100_128 "HTTP/1.1 200 OK"
+2026-02-07 16:39:14,479 | INFO | TTS spoke: PixelLink is ready. How can I help you?
+2026-02-07 16:39:14,479 | INFO | Intent: open_app | Steps: ['open_app']
+2026-02-07 16:39:14,479 | INFO | Executing step 1/1: open_app
+2026-02-07 16:39:14,729 | INFO | HTTP Request: POST https://api.elevenlabs.io/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM?output_format=mp3_44100_128 "HTTP/1.1 200 OK"
+2026-02-07 16:39:17,362 | INFO | TTS spoke: Task completed successfully.
+2026-02-07 16:39:17,546 | INFO | HTTP Request: POST https://api.elevenlabs.io/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM?output_format=mp3_44100_128 "HTTP/1.1 200 OK"
+2026-02-07 16:39:19,159 | INFO | TTS spoke: Goodbye!

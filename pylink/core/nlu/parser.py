@@ -1,83 +1,92 @@
-import re
+"""
+Intent parser for PixelLink.
+Uses Gemini LLM as the brain for natural language understanding.
+"""
+
+import logging
 from typing import Optional
 
 from core.nlu.intents import Intent
 
+logger = logging.getLogger(__name__)
 
-def _extract_after_keyword(original: str, lowered: str, keyword: str) -> Optional[str]:
-    index = lowered.find(keyword)
-    if index == -1:
-        return None
-    return original[index + len(keyword):].strip()
-
-
-def _extract_after_keywords(original: str, lowered: str, keywords: list[str]) -> Optional[str]:
-    for keyword in keywords:
-        extracted = _extract_after_keyword(original, lowered, keyword)
-        if extracted:
-            return extracted
-    return None
+# Flag to control whether to use LLM or fallback to regex
+USE_LLM = True
 
 
 def parse_intent(text: str, context=None) -> Intent:
+    """Parse user input and return an Intent.
+
+    Uses Gemini LLM for intelligent natural language understanding.
+
+    Args:
+        text: The user's spoken/typed input.
+        context: Optional context about the session.
+
+    Returns:
+        Intent object with parsed intent and entities.
+    """
+    if not text or not text.strip():
+        return Intent(name="unknown", entities={"text": ""}, confidence=0.0, raw_text="")
+
+    if USE_LLM:
+        try:
+            from core.nlu.llm_brain import parse_with_llm
+
+            # Convert context to dict if it has relevant info
+            context_dict = None
+            if context and hasattr(context, "last_intent"):
+                context_dict = {"last_intent": context.last_intent}
+
+            result = parse_with_llm(text, context_dict)
+
+            # If LLM returned a valid result, use it
+            # Otherwise fall back to regex (confidence 0 means LLM failed)
+            if result.confidence > 0:
+                return result
+            else:
+                logger.warning("LLM returned low confidence, falling back to regex")
+        except ImportError as e:
+            logger.warning(f"LLM brain not available, falling back to regex: {e}")
+        except Exception as e:
+            logger.error(f"LLM parsing failed, falling back to regex: {e}")
+
+    # Fallback to simple regex parsing (legacy)
+    return _parse_with_regex(text)
+
+
+def _parse_with_regex(text: str) -> Intent:
+    """Fallback regex-based parser (legacy).
+
+    Only used if LLM is unavailable.
+    """
+    import re
+
     lowered = text.lower().strip()
+    words = set(re.findall(r"\b\w+\b", lowered))
 
-    # Remove common filler words for more flexible parsing
-    cleaned = re.sub(r'\b(can you|could you|please|the|a|an)\b', '', lowered).strip()
+    # Open app - check this first to avoid false matches
+    match = re.search(r"(?:open|launch|start)\s+(.+)", lowered)
+    if match:
+        app = re.sub(r"[?.!,;:]+$", "", match.group(1)).strip()
+        return Intent(name="open_app", entities={"app": app}, confidence=0.7, raw_text=text)
 
-    # Confirmation intents
-    if lowered in {"confirm", "yes", "y", "ok", "okay", "sure", "proceed"}:
-        return Intent(name="confirm", confidence=1.0, raw_text=text)
+    # Type text
+    match = re.search(r"(?:type|write|enter)\s+(.+)", lowered)
+    if match:
+        return Intent(name="type_text", entities={"content": match.group(1)}, confidence=0.7, raw_text=text)
 
-    # Cancellation intents
-    if lowered in {"cancel", "stop", "abort", "no", "n", "nevermind", "nope"}:
-        return Intent(name="cancel", confidence=1.0, raw_text=text)
+    # Simple keyword matching - use word boundaries to avoid partial matches
+    exit_words = {"bye", "goodbye", "exit", "quit"}
+    if words & exit_words:
+        return Intent(name="exit", confidence=0.8, raw_text=text)
 
-    # Open app - flexible matching
-    open_keywords = ["open", "launch", "start", "run"]
-    for keyword in open_keywords:
-        if keyword in cleaned:
-            # Extract app name after the keyword
-            app = _extract_after_keyword(text, lowered, keyword)
-            if app:
-                # Clean up common suffixes
-                app = re.sub(r'\s+(app|application)$', '', app.strip(), flags=re.IGNORECASE)
-                return Intent(name="open_app", entities={"app": app}, confidence=0.9, raw_text=text)
+    confirm_words = {"yes", "confirm", "ok", "okay", "sure"}
+    if words & confirm_words:
+        return Intent(name="confirm", confidence=0.8, raw_text=text)
 
-    # Focus/switch app
-    focus_patterns = [
-        (r'(?:focus|switch to|go to)\s+(.+)', 0.85),
-        (r'(?:switch|change)\s+to\s+(.+)', 0.85),
-    ]
-    for pattern, confidence in focus_patterns:
-        match = re.search(pattern, lowered)
-        if match:
-            app = match.group(1).strip()
-            app = re.sub(r'\s+(app|application)$', '', app, flags=re.IGNORECASE)
-            return Intent(name="focus_app", entities={"app": app}, confidence=confidence, raw_text=text)
-
-    # Type text - flexible matching
-    type_keywords = ["type", "write", "enter"]
-    for keyword in type_keywords:
-        if keyword in cleaned:
-            content = _extract_after_keyword(text, lowered, keyword)
-            if content:
-                # Remove trailing punctuation like colons
-                content = re.sub(r'^:\s*', '', content)
-                return Intent(name="type_text", entities={"content": content}, confidence=0.85, raw_text=text)
-
-    # Click
-    if "click" in cleaned:
-        target = _extract_after_keyword(text, lowered, "click") or ""
-        return Intent(name="click", entities={"target": target}, confidence=0.8, raw_text=text)
-
-    # Reply to email - flexible matching
-    if ("reply" in cleaned or "respond" in cleaned) and ("email" in cleaned or "mail" in cleaned or "message" in cleaned):
-        content = _extract_after_keywords(text, lowered, ["saying", "that", "with", ":"])
-        entities = {
-            "target": "last_email" if "last" in lowered or "previous" in lowered else "email",
-            "content": content or "",
-        }
-        return Intent(name="reply_email", entities=entities, confidence=0.8, raw_text=text)
+    cancel_words = {"no", "cancel", "stop", "nevermind"}
+    if words & cancel_words and not (words & {"notes", "note"}):
+        return Intent(name="cancel", confidence=0.8, raw_text=text)
 
     return Intent(name="unknown", entities={"text": text}, confidence=0.0, raw_text=text)
