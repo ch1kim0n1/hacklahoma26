@@ -17,14 +17,48 @@
       <button id="hideBtn" class="hide-btn" type="button">Hide</button>
     </header>
 
+    <section class="preferences" id="preferencesPanel">
+      <label class="pref-item">
+        <input id="reducedLoadToggle" type="checkbox" />
+        <span>Reduced Load</span>
+      </label>
+      <label class="pref-item">
+        <input id="minimalUiToggle" type="checkbox" />
+        <span>Minimal UI</span>
+      </label>
+      <label class="pref-item">
+        <input id="visualOnlyToggle" type="checkbox" />
+        <span>Visual-Only Feedback</span>
+      </label>
+    </section>
+
+    <section class="voice-model-status hidden" id="voiceModelStatus">
+      <div class="voice-model-row">
+        <span id="voiceModelMessage">Preparing voice model...</span>
+        <span id="voiceModelPercent">0%</span>
+      </div>
+      <div class="voice-model-track">
+        <div id="voiceModelProgress" class="voice-model-progress"></div>
+      </div>
+    </section>
+
     <section class="log-area" id="logArea"></section>
 
     <form id="commandForm" class="command-form">
       <input id="commandInput" type="text" placeholder="Type a command..." autocomplete="off" />
       <button id="voiceBtn" class="voice-btn" type="button">Voice</button>
+      <button id="eyeControlBtn" class="eye-control-btn" type="button" title="Eye and blink control">Eye</button>
       <button type="submit">Send</button>
     </form>
   </main>
+  <aside id="eyePreviewPanel" class="eye-preview hidden" aria-live="polite">
+    <header class="eye-preview-header">
+      <strong>Eye Sensor</strong>
+      <span id="eyePreviewState">idle</span>
+    </header>
+    <video id="eyePreviewVideo" autoplay muted playsinline></video>
+    <div id="eyePreviewStats" class="eye-preview-stats">Waiting for eye control...</div>
+  </aside>
 
   <script src="./app.js"></script>
 </body>

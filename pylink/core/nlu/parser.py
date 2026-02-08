@@ -239,6 +239,148 @@ def parse_intent(text: str, context=None) -> Intent:
     if lowered in {"cancel", "stop", "abort", "no", "n", "nevermind", "nope", "never mind"}:
         return Intent(name="cancel", confidence=1.0, raw_text=text)
 
+    if re.search(r"\b(check|show|analyze|what(?:'s| is)|how)\b", cleaned) and re.search(
+        r"\b(mood|affection|emotional state|emotion)\b",
+        cleaned,
+    ):
+        return Intent(name="check_mood", confidence=0.9, raw_text=text)
+
+    # Reschedule / lighten load intents (emotion-driven task management)
+    if re.search(r"\b(reschedule|move|defer|postpone|push back|delay)\b", cleaned) and re.search(
+        r"\b(tasks?|todos?|reminders?|items?|things?|stuff|everything)\b", cleaned
+    ):
+        target = "all" if re.search(r"\b(all|everything|remaining|rest)\b", cleaned) else "heavy"
+        target_day = ""
+        day_match = re.search(r"\b(?:to|until|for)\s+(tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next week)\b", cleaned)
+        if day_match:
+            target_day = day_match.group(1)
+        return Intent(
+            name="reschedule_tasks",
+            entities={"target": target, "target_day": target_day},
+            confidence=0.88,
+            raw_text=text,
+        )
+
+    if re.search(r"\b(lighten|reduce|clear|simplify|ease)\b", cleaned) and re.search(
+        r"\b(load|schedule|calendar|tasks|day|plate|workload)\b", cleaned
+    ):
+        return Intent(
+            name="lighten_load",
+            entities={"scope": "today"},
+            confidence=0.86,
+            raw_text=text,
+        )
+
+    if re.search(r"\b(what|show|list|check)\b", cleaned) and re.search(
+        r"\b(schedule|calendar|events|agenda|plan|tasks|reminders|todo)\b", cleaned
+    ) and re.search(r"\b(today|tomorrow|this week|upcoming)\b", cleaned):
+        timeframe = "today"
+        if "tomorrow" in cleaned:
+            timeframe = "tomorrow"
+        elif "this week" in cleaned or "upcoming" in cleaned:
+            timeframe = "week"
+        return Intent(
+            name="check_schedule",
+            entities={"timeframe": timeframe},
+            confidence=0.87,
+            raw_text=text,
+        )
+
+    # Emotional check-in with context (more detailed than check_mood)
+    if re.search(r"\b(how am i|am i okay|am i alright|how do i seem|emotional report|full mood)\b", cleaned):
+        return Intent(name="emotional_check_in", confidence=0.9, raw_text=text)
+
+    # Browser automation intents (AI-powered browser control)
+    # Fill form intent
+    if re.search(r"\b(fill|fill out|complete|submit)\b", cleaned) and re.search(
+        r"\b(form|application|signup|sign up|registration|checkout|login form)\b", cleaned
+    ):
+        # Extract form fields if specified
+        form_type = ""
+        if "signup" in cleaned or "sign up" in cleaned or "registration" in cleaned:
+            form_type = "signup"
+        elif "login" in cleaned:
+            form_type = "login"
+        elif "checkout" in cleaned:
+            form_type = "checkout"
+        elif "application" in cleaned:
+            form_type = "application"
+        else:
+            form_type = "form"
+
+        # Extract field values from natural language
+        fields = {}
+        # Common patterns: "with email X", "name is Y", "set Z to W"
+        email_match = re.search(r"(?:email|e-mail)\s+(?:is\s+|as\s+|to\s+)?([^\s,]+@[^\s,]+)", cleaned)
+        if email_match:
+            fields["email"] = email_match.group(1)
+        name_match = re.search(r"(?:name|full name)\s+(?:is\s+|as\s+)?([a-z]+(?:\s+[a-z]+)?)", cleaned)
+        if name_match:
+            fields["name"] = name_match.group(1)
+
+        return Intent(
+            name="browser_fill_form",
+            entities={"form_type": form_type, "fields": fields, "instruction": text},
+            confidence=0.88,
+            raw_text=text,
+        )
+
+    # General browser task (AI navigates and performs action)
+    if re.search(r"\b(in the browser|on the website|on the page|browser)\b", cleaned) and re.search(
+        r"\b(click|find|look for|navigate|go to|search|enter|type|select|choose|download)\b", cleaned
+    ):
+        instruction = text  # Pass the full instruction to the AI
+        return Intent(
+            name="browser_task",
+            entities={"instruction": instruction},
+            confidence=0.85,
+            raw_text=text,
+        )
+
+    # Browser navigate and do something
+    if re.search(r"\b(go to|navigate to|open)\b", cleaned) and re.search(
+        r"\b(and|then)\b", cleaned
+    ) and re.search(r"\b(fill|click|search|find|submit|enter|download)\b", cleaned):
+        url = _extract_website_url(text, lowered)
+        return Intent(
+            name="browser_task",
+            entities={"url": url, "instruction": text},
+            confidence=0.87,
+            raw_text=text,
+        )
+
+    # Browser click element
+    if re.search(r"\b(click on|click the|press the|tap the|select the)\b", cleaned) and re.search(
+        r"\b(button|link|menu|dropdown|checkbox|option|tab|icon)\b", cleaned
+    ):
+        element = _extract_after_keywords(
+            text, lowered,
+            ["click on the ", "click the ", "press the ", "tap the ", "select the ",
+             "click on ", "click "]
+        )
+        return Intent(
+            name="browser_click",
+            entities={"element": element or "", "instruction": text},
+            confidence=0.84,
+            raw_text=text,
+        )
+
+    # Browser extract/read content
+    if re.search(r"\b(read|extract|get|scrape|copy)\b", cleaned) and re.search(
+        r"\b(from the page|from the website|from this page|on the page|content|text|data|information)\b", cleaned
+    ):
+        content_type = _extract_after_keywords(
+            text, lowered,
+            ["read the ", "extract the ", "get the ", "scrape the ", "copy the ",
+             "read ", "extract ", "get "]
+        )
+        return Intent(
+            name="browser_extract",
+            entities={"content_type": content_type or "main content", "instruction": text},
+            confidence=0.83,
+            raw_text=text,
+        )
+
     # File search - check early before general search patterns
     if re.search(r"\b(find file|search file|locate file|find document|search for file|search document)\b", cleaned):
         query = _extract_after_keywords(

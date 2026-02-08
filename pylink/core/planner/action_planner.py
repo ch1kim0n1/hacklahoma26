@@ -209,6 +209,100 @@ class ActionPlanner:
                 )
             )
 
+        elif name == "reschedule_tasks":
+            # Handled by orchestrator directly (needs emotional intelligence engine)
+            steps.append(
+                ActionStep(
+                    "emotional_reschedule",
+                    {
+                        "target": intent.entities.get("target", "heavy"),
+                        "target_day": intent.entities.get("target_day", "tomorrow"),
+                    },
+                    False,
+                    "Analyze and reschedule tasks based on emotional state",
+                )
+            )
+
+        elif name == "lighten_load":
+            steps.append(
+                ActionStep(
+                    "emotional_lighten",
+                    {"scope": intent.entities.get("scope", "today")},
+                    False,
+                    "Analyze workload and suggest reductions",
+                )
+            )
+
+        elif name == "check_schedule":
+            steps.append(
+                ActionStep(
+                    "mcp_get_events",
+                    {"timeframe": intent.entities.get("timeframe", "today")},
+                    False,
+                    "Fetch and display schedule",
+                )
+            )
+
+        elif name == "emotional_check_in":
+            steps.append(
+                ActionStep(
+                    "emotional_check_in",
+                    {},
+                    False,
+                    "Generate comprehensive emotional intelligence report",
+                )
+            )
+
+        # Browser automation intents (AI-powered)
+        elif name == "browser_task":
+            instruction = intent.entities.get("instruction", "")
+            url = intent.entities.get("url")
+            steps.append(
+                ActionStep(
+                    "browser_task",
+                    {"instruction": instruction, "url": url},
+                    False,
+                    "Execute browser automation task",
+                )
+            )
+
+        elif name == "browser_fill_form":
+            form_type = intent.entities.get("form_type", "form")
+            fields = intent.entities.get("fields", {})
+            instruction = intent.entities.get("instruction", "")
+            steps.append(
+                ActionStep(
+                    "browser_fill_form",
+                    {"form_type": form_type, "fields": fields, "instruction": instruction},
+                    False,
+                    f"Fill out {form_type} form",
+                )
+            )
+
+        elif name == "browser_click":
+            element = intent.entities.get("element", "")
+            instruction = intent.entities.get("instruction", "")
+            steps.append(
+                ActionStep(
+                    "browser_click",
+                    {"element": element, "instruction": instruction},
+                    False,
+                    f"Click on {element}",
+                )
+            )
+
+        elif name == "browser_extract":
+            content_type = intent.entities.get("content_type", "main content")
+            instruction = intent.entities.get("instruction", "")
+            steps.append(
+                ActionStep(
+                    "browser_extract",
+                    {"content_type": content_type, "instruction": instruction},
+                    False,
+                    f"Extract {content_type} from page",
+                )
+            )
+
         return steps
 
 

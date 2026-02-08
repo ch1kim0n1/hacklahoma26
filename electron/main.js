@@ -30,7 +30,30 @@ const runtimeState = {
     requestedOutput: true,
     inputEnabled: false,
     outputEnabled: false,
-    errors: {}
+    errors: {},
+    model: {
+      model: "",
+      state: "unavailable",
+      stage: "unavailable",
+      message: "Voice input is unavailable.",
+      progress: 0,
+      cached: null,
+      error: ""
+    }
+  },
+  eyeControl: {
+    active: false,
+    available: false,
+    lastGaze: null,
+    lastBlink: null,
+    lastEar: null,
+    blinkState: "open",
+    gazeNorm: null,
+    irisTracking: false,
+    controlMode: "face",
+    backend: null,
+    previewActive: false,
+    lastError: null
   },
   permissionProfile: {
     open_app: true,
@@ -67,16 +90,53 @@ function broadcast(channel, payload) {
   });
 }
 
+function normalizeVoiceModelState(payload) {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  return {
+    model: payload.model ?? runtimeState.voice.model.model,
+    state: payload.state ?? runtimeState.voice.model.state,
+    stage: payload.stage ?? runtimeState.voice.model.stage,
+    message: payload.message ?? runtimeState.voice.model.message,
+    progress: Number.isFinite(Number(payload.progress)) ? Number(payload.progress) : runtimeState.voice.model.progress,
+    cached: payload.cached ?? runtimeState.voice.model.cached,
+    error: payload.error ?? runtimeState.voice.model.error
+  };
+}
+
 function normalizeVoiceState(payload) {
   if (!payload || typeof payload !== "object") {
     return null;
   }
+  const model = normalizeVoiceModelState(payload.model || payload.voice_model);
   return {
     requestedInput: payload.requestedInput ?? payload.requested_input ?? runtimeState.voice.requestedInput,
     requestedOutput: payload.requestedOutput ?? payload.requested_output ?? runtimeState.voice.requestedOutput,
     inputEnabled: payload.inputEnabled ?? payload.input_enabled ?? runtimeState.voice.inputEnabled,
     outputEnabled: payload.outputEnabled ?? payload.output_enabled ?? runtimeState.voice.outputEnabled,
-    errors: payload.errors && typeof payload.errors === "object" ? payload.errors : runtimeState.voice.errors
+    errors: payload.errors && typeof payload.errors === "object" ? payload.errors : runtimeState.voice.errors,
+    model: model || runtimeState.voice.model
+  };
+}
+
+function normalizeEyeState(payload) {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  return {
+    active: Boolean(payload.active),
+    available: Boolean(payload.available),
+    lastGaze: payload.last_gaze ?? null,
+    lastBlink: payload.last_blink ?? null,
+    lastEar: payload.last_ear ?? null,
+    blinkState: payload.blink_state ?? "open",
+    gazeNorm: payload.gaze_norm ?? null,
+    irisTracking: Boolean(payload.iris_tracking),
+    controlMode: payload.control_mode ?? "face",
+    backend: payload.backend ?? null,
+    previewActive: Boolean(payload.preview_active),
+    lastError: payload.last_error ?? null
   };
 }
 
@@ -96,6 +156,12 @@ function applyRuntimeResult(result) {
       ...normalizedVoice
     };
   }
+  if (result.eye_control && typeof result.eye_control === "object") {
+    const normalizedEye = normalizeEyeState(result.eye_control);
+    if (normalizedEye) {
+      runtimeState.eyeControl = normalizedEye;
+    }
+  }
   broadcast("runtime:update", runtimeState);
 }
 
@@ -109,6 +175,12 @@ function applyBridgeReadyPayload(payload) {
       ...runtimeState.voice,
       ...normalizedVoice
     };
+  }
+  if (payload.eye_control && typeof payload.eye_control === "object") {
+    const normalizedEye = normalizeEyeState(payload.eye_control);
+    if (normalizedEye) {
+      runtimeState.eyeControl = normalizedEye;
+    }
   }
   broadcast("runtime:update", runtimeState);
 }
@@ -132,6 +204,19 @@ function onBridgeLine(rawLine) {
     applyBridgeReadyPayload(payload);
   }
 
+  if (payload.status === "voice_model_status") {
+    const model = normalizeVoiceModelState(payload.voice_model || payload.model);
+    if (model) {
+      runtimeState.voice = {
+        ...runtimeState.voice,
+        model
+      };
+      broadcast("runtime:voice-model-status", model);
+      broadcast("runtime:update", runtimeState);
+    }
+    return;
+  }
+
   const requestId = String(payload.request_id || "");
   if (requestId && bridgePending.has(requestId)) {
     const pending = bridgePending.get(requestId);
@@ -146,6 +231,32 @@ function onBridgeLine(rawLine) {
   }
 
   applyRuntimeResult(payload);
+}
+
+function classifyBridgeStderrLine(line) {
+  const text = String(line || "").trim();
+  if (!text) {
+    return "ignore";
+  }
+  // Expected noisy startup logs from MediaPipe / TensorFlow Lite / macOS camera stack.
+  if (
+    text.startsWith("W0000 ") ||
+    text.startsWith("I0000 ") ||
+    text.includes("inference_feedback_manager.cc") ||
+    text.includes("face_landmarker_graph.cc") ||
+    text.includes("gl_context.cc") ||
+    text.includes("TensorFlow Lite XNNPACK delegate") ||
+    text.includes("AVCaptureDeviceTypeExternal is deprecated")
+  ) {
+    return "ignore";
+  }
+  if (text.startsWith("[eye] ")) {
+    return "log";
+  }
+  if (text.startsWith("[bridge] Skipping plugin")) {
+    return "log";
+  }
+  return "error";
 }
 
 function failPendingRequests(error) {
@@ -219,13 +330,12 @@ function spawnBridge(command) {
 
     child.stderr.on("data", (chunk) => {
       const text = chunk.toString("utf8");
-      // The Python bridge may emit non-fatal warnings to stderr (e.g. optional plugins
-      // skipped due to missing deps). Surface those as logs so they don't look like failures.
       const lines = text.split(/\r?\n/).filter(Boolean);
       for (const line of lines) {
-        if (line.startsWith("[bridge] Skipping plugin")) {
+        const classification = classifyBridgeStderrLine(line);
+        if (classification === "log") {
           broadcast("runtime:bridge-log", { line });
-        } else {
+        } else if (classification === "error") {
           broadcast("runtime:bridge-error", { error: line });
         }
       }
@@ -407,6 +517,30 @@ function registerIpcHandlers() {
   ipcMain.handle("runtime:cancel", async (_event, payload) => {
     const source = String(payload?.source || "text");
     return processRuntimeInput("cancel", source);
+  });
+
+  ipcMain.handle("eye:start", async () => {
+    const result = await sendBridgeRequest({ action: "eye_control_start" });
+    applyRuntimeResult(result);
+    return result;
+  });
+
+  ipcMain.handle("eye:stop", async () => {
+    const result = await sendBridgeRequest({ action: "eye_control_stop" });
+    applyRuntimeResult(result);
+    return result;
+  });
+
+  ipcMain.handle("eye:get-state", async () => {
+    const result = await sendBridgeRequest({ action: "eye_control_get_state" });
+    if (result && result.eye_control) {
+      const normalizedEye = normalizeEyeState(result.eye_control);
+      if (normalizedEye) {
+        runtimeState.eyeControl = normalizedEye;
+        broadcast("runtime:update", runtimeState);
+      }
+    }
+    return result;
   });
 
   ipcMain.handle("runtime:update-preferences", async (_event, payload) => {

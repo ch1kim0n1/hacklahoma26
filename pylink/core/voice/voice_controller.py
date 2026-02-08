@@ -1,10 +1,14 @@
-"""Voice Controller - Unified interface for TTS and STT."""
+"""Voice Controller - Unified interface for TTS and STT.
+
+Implements sequential state management: when speaking, listening is blocked and vice versa.
+This ensures clear turn-taking in voice interactions.
+"""
 
 from __future__ import annotations
 
 import logging
 import threading
-from typing import Optional, Callable
+from typing import Any, Optional, Callable
 
 from core.voice.tts import TextToSpeech
 from core.voice.stt import SpeechToText
@@ -13,10 +17,11 @@ from core.voice.stt import SpeechToText
 class VoiceController:
     """Unified controller for voice input and output.
 
-    This class manages the voice interaction loop:
-    1. Listen for user speech (STT)
-    2. Process the command (handled by caller)
-    3. Speak the response (TTS)
+    This class manages the voice interaction loop with SEQUENTIAL state management:
+    - When speaking (TTS), listening (STT) is blocked
+    - When listening (STT), speaking (TTS) is blocked
+
+    This ensures clean turn-taking without overlapping audio.
 
     Provides both synchronous and asynchronous interfaces.
     """
@@ -65,6 +70,11 @@ class VoiceController:
 
         self._is_active = False
         self._stop_event = threading.Event()
+        self._stt_warmup_thread: Optional[threading.Thread] = None
+
+        # Sequential state management: only one can be active at a time
+        self._voice_state_lock = threading.Lock()
+        self._current_state = "idle"  # "idle", "speaking", "listening"
 
         logging.info(
             "VoiceController initialized (TTS=%s, STT=%s)",
@@ -72,8 +82,83 @@ class VoiceController:
             "enabled" if self._stt else "disabled",
         )
 
+    def warm_stt(
+        self, status_callback: Optional[Callable[[dict[str, Any]], None]] = None
+    ) -> bool:
+        """Synchronously warm up the STT model."""
+        if not self._stt or not self.enable_stt:
+            return False
+        return self._stt.warm_up(progress_callback=status_callback)
+
+    def warm_stt_async(
+        self, status_callback: Optional[Callable[[dict[str, Any]], None]] = None
+    ) -> bool:
+        """Warm up STT model in a background thread."""
+        if not self._stt or not self.enable_stt:
+            return False
+        if self._stt_warmup_thread and self._stt_warmup_thread.is_alive():
+            return True
+
+        def _run() -> None:
+            try:
+                self._stt.warm_up(progress_callback=status_callback)
+            except Exception as exc:
+                self._init_errors["stt_warmup"] = str(exc)
+                logging.info("Failed to warm up STT model: %s", exc)
+
+        self._stt_warmup_thread = threading.Thread(
+            target=_run, name="stt-warmup", daemon=True
+        )
+        self._stt_warmup_thread.start()
+        return True
+
+    def _acquire_state(self, new_state: str) -> bool:
+        """Try to acquire a voice state (speaking or listening).
+
+        Returns True if the state was acquired, False if blocked by another state.
+        """
+        with self._voice_state_lock:
+            if self._current_state == "idle":
+                self._current_state = new_state
+                logging.debug("Voice state changed to: %s", new_state)
+                return True
+            else:
+                logging.debug(
+                    "Cannot enter %s state - currently in %s state",
+                    new_state,
+                    self._current_state,
+                )
+                return False
+
+    def _release_state(self) -> None:
+        """Release the current voice state back to idle."""
+        with self._voice_state_lock:
+            logging.debug("Voice state released from: %s to idle", self._current_state)
+            self._current_state = "idle"
+
+    def _wait_for_idle(self, timeout: float = 30.0) -> bool:
+        """Wait for the voice state to become idle.
+
+        Args:
+            timeout: Maximum time to wait in seconds.
+
+        Returns:
+            True if state is now idle, False if timeout occurred.
+        """
+        import time
+        start = time.time()
+        while time.time() - start < timeout:
+            with self._voice_state_lock:
+                if self._current_state == "idle":
+                    return True
+            time.sleep(0.05)
+        return False
+
     def speak(self, text: str, blocking: bool = True) -> bool:
         """Speak text using TTS.
+
+        Sequential state management: Will wait for any active listening to complete
+        before speaking. While speaking, listening is blocked.
 
         Args:
             text: Text to speak.
@@ -86,7 +171,21 @@ class VoiceController:
             print(f"[Voice]: {text}")
             return True
 
-        return self._tts.speak(text, blocking=blocking)
+        # Wait for listening to finish before speaking
+        if not self._wait_for_idle(timeout=30.0):
+            logging.warning("Timeout waiting for voice state to become idle for speaking")
+            return False
+
+        # Acquire speaking state
+        if not self._acquire_state("speaking"):
+            logging.warning("Failed to acquire speaking state")
+            return False
+
+        try:
+            return self._tts.speak(text, blocking=blocking)
+        finally:
+            if blocking:
+                self._release_state()
 
     def listen(
         self,
@@ -95,9 +194,13 @@ class VoiceController:
     ) -> str:
         """Listen for speech and return transcribed text.
 
+        Sequential state management: Will wait for any active speaking to complete
+        before listening. While listening, speaking is blocked.
+
         Args:
             allow_text_fallback: If True and STT is unavailable, fallback to stdin.
                 Set False for non-interactive environments (like desktop bridge).
+            status_callback: Optional callback for listening state changes.
 
         Returns:
             Transcribed text, or empty string if nothing detected.
@@ -108,17 +211,30 @@ class VoiceController:
                 return input("Voice> ").strip()
             return ""
 
-        callback = status_callback
-        if callback is None:
-            def default_status_callback(status: str):
-                if status == "listening":
-                    print("🎤 Listening...")
-                elif status == "processing":
-                    print("⏳ Processing...")
+        # Wait for speaking to finish before listening
+        if not self._wait_for_idle(timeout=30.0):
+            logging.warning("Timeout waiting for voice state to become idle for listening")
+            return ""
 
-            callback = default_status_callback
+        # Acquire listening state
+        if not self._acquire_state("listening"):
+            logging.warning("Failed to acquire listening state")
+            return ""
 
-        return self._stt.listen(prompt_callback=callback)
+        try:
+            callback = status_callback
+            if callback is None:
+                def default_status_callback(status: str):
+                    if status == "listening":
+                        print("🎤 Listening...")
+                    elif status == "processing":
+                        print("⏳ Processing...")
+
+                callback = default_status_callback
+
+            return self._stt.listen(prompt_callback=callback)
+        finally:
+            self._release_state()
 
     def listen_and_respond(
         self,
@@ -190,6 +306,8 @@ class VoiceController:
             self._tts.stop()
         if self._stt:
             self._stt.stop()
+        # Release any held state
+        self._release_state()
 
     def cleanup(self) -> None:
         """Clean up resources."""
@@ -200,17 +318,25 @@ class VoiceController:
     @property
     def is_speaking(self) -> bool:
         """Check if currently speaking."""
-        return self._tts.is_speaking if self._tts else False
+        with self._voice_state_lock:
+            return self._current_state == "speaking"
 
     @property
     def is_listening(self) -> bool:
         """Check if currently listening."""
-        return self._stt.is_listening if self._stt else False
+        with self._voice_state_lock:
+            return self._current_state == "listening"
 
     @property
     def is_active(self) -> bool:
         """Check if voice loop is active."""
         return self._is_active
+
+    @property
+    def voice_state(self) -> str:
+        """Get the current voice state ('idle', 'speaking', or 'listening')."""
+        with self._voice_state_lock:
+            return self._current_state
 
     def set_voice(self, voice_id: str) -> None:
         """Change the TTS voice.
@@ -252,6 +378,21 @@ class VoiceController:
         if self._stt and getattr(self._stt, "last_error", None):
             return str(self._stt.last_error)
         return ""
+
+    @property
+    def stt_model_status(self) -> dict[str, Any]:
+        """Current STT model status."""
+        if self._stt and hasattr(self._stt, "model_status"):
+            return self._stt.model_status
+        return {
+            "model": "",
+            "state": "unavailable",
+            "stage": "unavailable",
+            "message": "Voice input is unavailable.",
+            "progress": 0,
+            "cached": None,
+            "error": "",
+        }
 
 
 def read_voice_input(voice: VoiceController, prompt: str = "") -> dict:

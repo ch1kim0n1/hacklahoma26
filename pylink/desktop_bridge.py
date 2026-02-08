@@ -4,8 +4,14 @@ import json
 import os
 import signal
 import sys
+import threading
 from pathlib import Path
 from typing import Any
+
+from dotenv import load_dotenv
+
+# Load environment variables from .env file (checks current and parent directories)
+load_dotenv()
 
 from core.runtime.orchestrator import DEFAULT_PERMISSION_PROFILE, PixelLinkRuntime
 
@@ -13,6 +19,9 @@ from core.runtime.orchestrator import DEFAULT_PERMISSION_PROFILE, PixelLinkRunti
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from bridge import load_plugins
+
+
+_WRITE_LOCK = threading.Lock()
 
 
 def _read_json_line() -> dict[str, Any] | None:
@@ -29,8 +38,9 @@ def _read_json_line() -> dict[str, Any] | None:
 
 
 def _write_json(payload: dict[str, Any]) -> None:
-    sys.stdout.write(json.dumps(payload, default=str) + "\n")
-    sys.stdout.flush()
+    with _WRITE_LOCK:
+        sys.stdout.write(json.dumps(payload, default=str) + "\n")
+        sys.stdout.flush()
 
 
 def _as_bool(value: str | None, default: bool = False) -> bool:
@@ -70,6 +80,109 @@ def _build_error(
         payload["request_id"] = request_id
     if extra:
         payload.update(extra)
+    return payload
+
+
+def _voice_error_guidance(code: str, details: str = "") -> tuple[str, list[str]]:
+    detail = details.lower()
+    if code == "VOICE_INPUT_UNAVAILABLE":
+        return (
+            "Voice input is currently unavailable.",
+            [
+                "Enable voice input in settings, then try again.",
+                "If microphone permission changed recently, restart PixelLink.",
+            ],
+        )
+    if code == "VOICE_INPUT_EMPTY":
+        return (
+            "No speech was detected.",
+            [
+                "Speak after pressing the Voice button.",
+                "Move closer to the microphone or reduce background noise.",
+            ],
+        )
+    if "permission" in detail or "not permitted" in detail or "not authorized" in detail:
+        return (
+            "Microphone permission is blocked.",
+            [
+                "Allow microphone access for Terminal/Electron in system privacy settings.",
+                "Restart PixelLink after granting permission.",
+            ],
+        )
+    if "pyaudio" in detail or "portaudio" in detail:
+        return (
+            "Microphone audio backend is unavailable.",
+            [
+                "Install or repair PyAudio/PortAudio dependencies.",
+                "Restart PixelLink after installation.",
+            ],
+        )
+    if "network" in detail or "connection" in detail:
+        return (
+            "Voice model download failed due to a network issue.",
+            [
+                "Check your internet connection and try again.",
+                "Keep PixelLink open until model preparation completes.",
+            ],
+        )
+    if "whisper" in detail or "model" in detail:
+        return (
+            "Speech model initialization failed.",
+            [
+                "Retry in a moment; first-run model setup can take time.",
+                "If this persists, clear the Whisper cache and restart.",
+            ],
+        )
+    if code == "VOICE_INPUT_FAILED":
+        return (
+            "Voice input failed before transcription completed.",
+            [
+                "Try again and speak clearly after the listening indicator appears.",
+                "Check microphone device and permissions.",
+            ],
+        )
+    return (
+        "Voice command failed.",
+        [
+            "Try again in a quieter environment.",
+            "If the issue continues, restart PixelLink.",
+        ],
+    )
+
+
+def _build_voice_error(
+    *,
+    code: str,
+    details: str = "",
+    message: str | None = None,
+    request_id: str | None = None,
+    error: Exception | None = None,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    user_message, hints = _voice_error_guidance(code, details or (str(error) if error else ""))
+    payload_extra = {
+        "user_message": user_message,
+        "hints": hints,
+    }
+    if extra:
+        payload_extra.update(extra)
+    payload = _build_error(
+        message=message or user_message,
+        code=code,
+        request_id=request_id,
+        error=error,
+        extra=payload_extra,
+    )
+    if not isinstance(payload.get("error"), dict):
+        payload["error"] = {
+            "code": code,
+            "type": type(error).__name__ if error else None,
+            "details": details or (str(error) if error else None),
+        }
+    if details:
+        payload["error"]["details"] = details
+    payload["error"]["user_message"] = user_message
+    payload["error"]["hints"] = hints
     return payload
 
 
@@ -132,6 +245,36 @@ def main() -> int:
 
     voice_input_enabled = bool(voice_controller and voice_controller.stt_available)
     voice_output_enabled = bool(voice_controller and voice_controller.tts_available)
+    voice_model_lock = threading.Lock()
+    voice_model_state: dict[str, Any] = (
+        voice_controller.stt_model_status if voice_controller and voice_input_enabled else {
+            "model": "",
+            "state": "unavailable",
+            "stage": "unavailable",
+            "message": "Voice input is unavailable.",
+            "progress": 0,
+            "cached": None,
+            "error": "",
+        }
+    )
+
+    def _get_voice_model_state() -> dict[str, Any]:
+        with voice_model_lock:
+            return dict(voice_model_state)
+
+    def _update_voice_model_state(update: dict[str, Any]) -> dict[str, Any]:
+        with voice_model_lock:
+            voice_model_state.update(update)
+            return dict(voice_model_state)
+
+    def _emit_voice_model_status(update: dict[str, Any]) -> None:
+        _update_voice_model_state(update)
+        _write_json(
+            {
+                "status": "voice_model_status",
+                "voice_model": _get_voice_model_state(),
+            }
+        )
 
     def _voice_state() -> dict[str, Any]:
         return {
@@ -140,9 +283,11 @@ def main() -> int:
             "input_enabled": voice_input_enabled,
             "output_enabled": voice_output_enabled,
             "errors": voice_errors,
+            "model": _get_voice_model_state(),
         }
 
     def _speak_response(result: dict[str, Any]) -> None:
+        """Speak the response text. Uses blocking=True for sequential state management."""
         if not voice_controller or not voice_output_enabled:
             return
 
@@ -156,7 +301,8 @@ def main() -> int:
             return
 
         try:
-            ok = voice_controller.speak(text, blocking=False)
+            # Use blocking=True to ensure sequential operation (speaking finishes before listening can start)
+            ok = voice_controller.speak(text, blocking=True)
             if not ok:
                 result.setdefault("warnings", []).append("VOICE_OUTPUT_FAILED")
         except Exception as exc:
@@ -181,6 +327,9 @@ def main() -> int:
             "voice": _voice_state(),
         }
     )
+
+    if voice_controller and voice_input_enabled:
+        voice_controller.warm_stt_async(status_callback=_emit_voice_model_status)
 
     try:
         while running:
@@ -238,8 +387,7 @@ def main() -> int:
             if action == "capture_voice_input":
                 if not voice_controller or not voice_input_enabled:
                     _write_json(
-                        _build_error(
-                            message="Voice input is unavailable.",
+                        _build_voice_error(
                             code="VOICE_INPUT_UNAVAILABLE",
                             request_id=request_id,
                             extra={**_runtime_state(runtime), "voice": _voice_state()},
@@ -250,18 +398,19 @@ def main() -> int:
                 prompt = str(payload.get("prompt", "")).strip()
                 try:
                     if prompt and voice_output_enabled:
-                        voice_controller.speak(prompt, blocking=False)
+                        # Use blocking=True to ensure speaking completes before listening
+                        voice_controller.speak(prompt, blocking=True)
                     transcript = voice_controller.listen(
                         allow_text_fallback=False,
                         status_callback=lambda _status: None,
                     ).strip()
                 except Exception as exc:
                     _write_json(
-                        _build_error(
-                            message="Voice input failed.",
+                        _build_voice_error(
                             code="VOICE_INPUT_FAILED",
                             request_id=request_id,
                             error=exc,
+                            details=str(exc),
                             extra={**_runtime_state(runtime), "voice": _voice_state()},
                         )
                     )
@@ -271,10 +420,10 @@ def main() -> int:
                     stt_error = voice_controller.last_stt_error if voice_controller else ""
                     if stt_error:
                         _write_json(
-                            _build_error(
-                                message="Voice input failed.",
+                            _build_voice_error(
                                 code="VOICE_INPUT_FAILED",
                                 request_id=request_id,
+                                details=stt_error,
                                 extra={
                                     **_runtime_state(runtime),
                                     "voice": _voice_state(),
@@ -290,8 +439,7 @@ def main() -> int:
                         )
                         continue
                     _write_json(
-                        _build_error(
-                            message="No speech detected. Please try again.",
+                        _build_voice_error(
                             code="VOICE_INPUT_EMPTY",
                             request_id=request_id,
                             extra={
@@ -345,6 +493,8 @@ def main() -> int:
                         voice_input_enabled = requested and bool(
                             voice_controller and voice_controller.stt_available
                         )
+                        if voice_controller and voice_input_enabled:
+                            voice_controller.warm_stt_async(status_callback=_emit_voice_model_status)
                     response = {
                         "status": "updated",
                         "message": "Preferences updated",
@@ -366,6 +516,17 @@ def main() -> int:
                 continue
 
             if action == "get_state":
+                _write_json(
+                    {
+                        "status": "state",
+                        "pending_confirmation": bool(runtime.session.pending_steps),
+                        "pending_clarification": bool(runtime.session.pending_clarification),
+                        "clarification_prompt": (runtime.session.pending_clarification or {}).get("prompt", ""),
+                        "last_app": runtime.session.last_app,
+                        "history_count": len(runtime.session.history),
+                        "affection": runtime.session.last_affection,
+                    }
+                )
                 response = {
                     "status": "state",
                     **_runtime_state(runtime),

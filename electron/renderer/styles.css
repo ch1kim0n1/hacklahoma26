@@ -28,13 +28,17 @@ body {
   padding: 10px;
 }
 
+.hidden {
+  display: none !important;
+}
+
 .console {
   height: calc(100vh - 20px);
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 14px;
   display: grid;
-  grid-template-rows: auto 1fr auto;
+  grid-template-rows: auto auto auto 1fr auto;
   overflow: hidden;
 }
 
@@ -88,6 +92,64 @@ body {
   font-size: 0.78rem;
 }
 
+.preferences {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  background: #f8fafc;
+  overflow: auto;
+}
+
+.pref-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.76rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.pref-item input {
+  margin: 0;
+}
+
+.voice-model-status {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  background: #f3f7ff;
+}
+
+.voice-model-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.76rem;
+  color: var(--muted);
+}
+
+.voice-model-track {
+  margin-top: 6px;
+  width: 100%;
+  height: 7px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: #dde6f8;
+}
+
+.voice-model-progress {
+  width: 0%;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #3a63da, #6b94ff);
+  transition: width 120ms ease;
+}
+
+.hidden {
+  display: none !important;
+}
+
 .log-area {
   padding: 10px;
   overflow: auto;
@@ -130,7 +192,7 @@ body {
   border-top: 1px solid var(--border);
   padding: 8px;
   display: grid;
-  grid-template-columns: 1fr auto auto;
+  grid-template-columns: 1fr auto auto auto;
   gap: 8px;
 }
 
@@ -172,4 +234,95 @@ body {
   background: #ffe8de;
   border-color: #e28d62;
   color: #8f3f20;
+}
+
+.console.reduced-load .console-header h1 {
+  font-size: 1rem;
+}
+
+.console.reduced-load .status-wrap {
+  font-size: 0.92rem;
+}
+
+.console.reduced-load .log-entry {
+  font-size: 0.9rem;
+  padding: 10px;
+}
+
+.console.reduced-load .command-form input,
+.console.reduced-load .command-form button {
+  font-size: 0.94rem;
+}
+
+.console.minimal-ui {
+  grid-template-rows: auto auto auto auto;
+}
+
+.console.minimal-ui .log-area {
+  display: none;
+}
+
+.console.minimal-ui .console-header h1 {
+  display: none;
+}
+
+.console.minimal-ui .preferences {
+  padding-top: 5px;
+  padding-bottom: 5px;
+.eye-control-btn {
+  background: #fff;
+  color: var(--accent);
+  border: 1px solid #9cb1e6;
+  min-width: 56px;
+}
+
+.eye-control-btn.eye-active {
+  background: #d4e4f7;
+  border-color: var(--accent);
+  color: #0f2d6b;
+}
+
+.eye-preview {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  width: 260px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 8px 22px rgba(15, 35, 71, 0.16);
+  overflow: hidden;
+  z-index: 99;
+}
+
+.eye-preview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.78rem;
+}
+
+#eyePreviewState {
+  color: var(--muted);
+  font-size: 0.74rem;
+  text-transform: lowercase;
+}
+
+#eyePreviewVideo {
+  display: block;
+  width: 100%;
+  height: 148px;
+  object-fit: cover;
+  background: #0f172a;
+}
+
+.eye-preview-stats {
+  padding: 8px 10px;
+  font-size: 0.74rem;
+  line-height: 1.4;
+  color: var(--text);
+  white-space: pre-line;
 }

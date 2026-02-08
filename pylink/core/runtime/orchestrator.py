@@ -1,15 +1,25 @@
 from __future__ import annotations
 
 import re
+import threading
 from dataclasses import asdict
 from typing import Any
 
 from core.context.session import SessionContext
 from core.executor.engine import ExecutionEngine
+from core.nlu.affection_model import AffectionNLUModel
+from core.nlu.emotional_intelligence import EmotionalIntelligenceEngine
 from core.nlu.intents import Intent
 from core.nlu.parser import parse_intent
+from core.nlu.llm_brain import (
+    get_conversational_ai,
+    analyze_with_conversation,
+    generate_completion_message,
+    SENSITIVE_ACTIONS,
+)
 from core.planner.action_planner import ActionPlanner
 from core.safety.guard import KillSwitch, SafetyGuard
+from core.browser.browser_agent import BrowserAgent, get_browser_agent, close_browser_agent
 
 
 DEFAULT_PERMISSION_PROFILE = {
@@ -36,6 +46,14 @@ DEFAULT_PERMISSION_PROFILE = {
     "mcp_get_events": True,
     "mcp_create_event": True,
     "autofill_login": True,
+    "emotional_reschedule": True,
+    "emotional_lighten": True,
+    "emotional_check_in": True,
+    # Browser automation actions (AI-powered)
+    "browser_task": True,
+    "browser_fill_form": True,
+    "browser_click": True,
+    "browser_extract": True,
 }
 
 
@@ -49,6 +67,8 @@ class PixelLinkRuntime:
         enable_kill_switch: bool = True,
         verbose: bool = True,
         mcp_tools: dict[str, Any] | None = None,
+        mood_low_threshold: float = 42.0,
+        mood_critical_threshold: float = 25.0,
     ) -> None:
         self.session = SessionContext()
         self.guard = SafetyGuard()
@@ -59,16 +79,77 @@ class PixelLinkRuntime:
         self.mcp_tools = mcp_tools or {}
         self.planner = ActionPlanner(mcp_tools=self.mcp_tools)
         self.executor = ExecutionEngine(self.kill_switch, dry_run=dry_run, verbose=verbose)
+        self.affection_nlu = AffectionNLUModel(
+            low_threshold=mood_low_threshold,
+            critical_threshold=mood_critical_threshold,
+        )
+        self.emotional_intelligence = EmotionalIntelligenceEngine(mcp_tools=self.mcp_tools)
+        self._current_affection: dict[str, Any] | None = None
         self.executor.set_speed(speed)
         self.guard.set_allowed_actions(permission_profile or DEFAULT_PERMISSION_PROFILE)
-        
+
+        # Browser agent for AI-powered browser automation
+        self._browser_agent: BrowserAgent | None = None
+        self._browser_headless = False
+
+        # Conversational AI for user interaction
+        self._conversational_ai = get_conversational_ai()
+        self._use_conversational_mode = True  # Enable conversational AI by default
+
         # Initialize file system context in background
-        import threading
         threading.Thread(target=self.session.filesystem.index_files, daemon=True).start()
 
     def close(self) -> None:
         if self.enable_kill_switch:
             self.kill_switch.stop()
+        # Close browser agent if it exists
+        if self._browser_agent:
+            try:
+                import asyncio
+                asyncio.run(self._browser_agent.close())
+            except Exception:
+                pass
+
+    def _get_browser_agent(self) -> BrowserAgent:
+        """Get or create the browser agent instance."""
+        if self._browser_agent is None:
+            self._browser_agent = BrowserAgent(headless=self._browser_headless)
+        return self._browser_agent
+
+    async def _execute_browser_action(self, action: str, params: dict) -> dict[str, Any]:
+        """Execute a browser automation action."""
+        agent = self._get_browser_agent()
+
+        if action == "browser_task":
+            instruction = params.get("instruction", "")
+            url = params.get("url")
+            if url:
+                instruction = f"First navigate to {url}, then {instruction}"
+            return await agent.run_task(instruction)
+
+        elif action == "browser_fill_form":
+            form_type = params.get("form_type", "form")
+            fields = params.get("fields", {})
+            instruction = params.get("instruction", "")
+            if fields:
+                return await agent.fill_form(form_type, fields)
+            else:
+                # Use the original instruction for AI to figure out
+                return await agent.run_task(instruction)
+
+        elif action == "browser_click":
+            element = params.get("element", "")
+            instruction = params.get("instruction", "")
+            if element:
+                return await agent.click_element(element)
+            else:
+                return await agent.run_task(instruction)
+
+        elif action == "browser_extract":
+            content_type = params.get("content_type", "main content")
+            return await agent.extract_content(content_type)
+
+        return {"success": False, "message": f"Unknown browser action: {action}"}
 
     def set_preferences(
         self,
@@ -86,14 +167,266 @@ class PixelLinkRuntime:
         if not cleaned_text:
             return self._response("idle", "No input provided.", source=source)
 
+        affection_assessment = self.affection_nlu.analyze(cleaned_text, self.session)
+
+        # Enrich with real calendar/reminder data when available
+        try:
+            import asyncio
+            events, reminders = asyncio.run(
+                self.emotional_intelligence.gather_schedule_data()
+            )
+            affection_assessment = self.affection_nlu.enrich_with_schedule(
+                affection_assessment, events, reminders
+            )
+        except Exception:
+            events, reminders = [], []
+
+        self._current_affection = affection_assessment.to_dict()
+        self.session.record_affection(self._current_affection, cleaned_text)
+
+        # Handle pending clarification from conversational AI
         if self.session.pending_clarification:
             return self._handle_clarification(cleaned_text, source)
 
+        # Use conversational AI to analyze the request
+        if self._use_conversational_mode:
+            return self._handle_conversational_input(cleaned_text, source)
+
+        # Fallback to direct intent parsing
         intent = parse_intent(cleaned_text, self.session)
         self.session.record_intent(intent.name, cleaned_text)
 
         if self.session.pending_steps:
             return self._handle_pending(intent.name, source)
+
+        # Continue with non-conversational flow for legacy support
+        return self._process_intent(intent, cleaned_text, source)
+
+    def _handle_conversational_input(self, cleaned_text: str, source: str) -> dict[str, Any]:
+        """Handle user input using conversational AI with clarification and confirmation."""
+        # Build context for conversational AI
+        context = {
+            "last_intent": self.session.history[-1]["intent"] if self.session.history else None,
+            "last_app": self.session.last_app,
+            "pending_clarification": self.session.pending_clarification,
+        }
+
+        # Analyze with conversational AI
+        analysis = analyze_with_conversation(cleaned_text, context)
+        status = analysis.get("status", "ready")
+        intent_name = analysis.get("intent", "unknown")
+        entities = analysis.get("entities", {})
+        confidence = analysis.get("confidence", 0.5)
+        user_message = analysis.get("user_message", "")
+
+        # Handle different statuses
+        if status == "needs_clarification":
+            # AI needs more information - ask the user
+            clarification_question = analysis.get("clarification_question", "Could you provide more details?")
+            missing_info = analysis.get("missing_info", [])
+
+            self.session.set_pending_clarification({
+                "intent_name": intent_name,
+                "clarification_type": "conversational_ai",
+                "entities": entities,
+                "missing_info": missing_info,
+                "prompt": clarification_question,
+                "original_text": cleaned_text,
+            })
+
+            return self._response(
+                "awaiting_clarification",
+                user_message or clarification_question,
+                source=source,
+                intent=Intent(name=intent_name, entities=entities, confidence=confidence, raw_text=cleaned_text),
+                pending_clarification=True,
+            )
+
+        elif status == "confirm_sensitive":
+            # Sensitive action requires confirmation - repeat info and ask
+            confirmation_summary = analysis.get("confirmation_summary", "")
+            action_description = SENSITIVE_ACTIONS.get(intent_name, "this action")
+
+            # Build detailed confirmation message
+            confirm_message = f"⚠️ Sensitive action: {action_description}\n\n"
+            confirm_message += f"{confirmation_summary}\n\n"
+            confirm_message += "Please say 'confirm' or 'yes' to proceed, or 'cancel' to abort."
+
+            self.session.set_pending_clarification({
+                "intent_name": intent_name,
+                "clarification_type": "confirm_sensitive_action",
+                "entities": entities,
+                "confirmation_summary": confirmation_summary,
+                "prompt": confirm_message,
+                "original_text": cleaned_text,
+            })
+
+            # Store the pending action in conversational AI
+            self._conversational_ai.pending_action = {
+                "intent": intent_name,
+                "entities": entities,
+                "confirmation_summary": confirmation_summary,
+            }
+
+            return self._response(
+                "awaiting_confirmation",
+                user_message or confirm_message,
+                source=source,
+                intent=Intent(name=intent_name, entities=entities, confidence=confidence, raw_text=cleaned_text),
+                pending_confirmation=True,
+            )
+
+        else:  # status == "ready"
+            # AI is confident - proceed with execution
+            intent = Intent(name=intent_name, entities=entities, confidence=confidence, raw_text=cleaned_text)
+            self.session.record_intent(intent.name, cleaned_text)
+
+            # Check if this is a browser task - send to browser-use
+            if intent_name.startswith("browser_"):
+                return self._execute_browser_with_confirmation(intent, source, user_message)
+
+            # Execute the intent and generate completion message
+            result = self._execute_intent_with_completion(intent, source)
+
+            # Add AI's friendly message if available
+            if user_message and result.get("status") == "completed":
+                result["message"] = f"{user_message}\n\n{result.get('message', '')}"
+
+            return result
+
+    def _execute_browser_with_confirmation(
+        self,
+        intent: Intent,
+        source: str,
+        pre_message: str = ""
+    ) -> dict[str, Any]:
+        """Execute browser action and confirm completion to user."""
+        import asyncio
+
+        steps = self.planner.plan(intent, self.session, self.guard)
+
+        for step in steps:
+            if step.action.startswith("browser_"):
+                try:
+                    result = asyncio.run(self._execute_browser_action(step.action, step.params))
+
+                    # Generate completion message using OpenAI
+                    success = result.get("success", False)
+                    result_msg = result.get("message", "")
+                    completion_message = generate_completion_message(intent.name, success, result_msg)
+
+                    if success:
+                        full_message = f"{pre_message}\n\n{completion_message}" if pre_message else completion_message
+                        return self._response(
+                            "completed",
+                            full_message.strip(),
+                            source=source,
+                            intent=intent,
+                            steps=steps,
+                        )
+                    else:
+                        return self._response(
+                            "error",
+                            completion_message,
+                            source=source,
+                            intent=intent,
+                            steps=steps,
+                        )
+                except Exception as e:
+                    error_msg = generate_completion_message(intent.name, False, str(e))
+                    return self._response(
+                        "error",
+                        error_msg,
+                        source=source,
+                        intent=intent,
+                        steps=steps,
+                    )
+
+        return self._response("error", "No browser action to execute.", source=source, intent=intent)
+
+    def _execute_intent_with_completion(self, intent: Intent, source: str) -> dict[str, Any]:
+        """Execute intent and generate AI completion message."""
+        result = self._execute_intent(intent, source)
+
+        # Generate completion message for successful executions
+        if result.get("status") == "completed":
+            success_msg = generate_completion_message(
+                intent.name,
+                True,
+                result.get("message", "")
+            )
+            result["message"] = success_msg
+
+        return result
+
+    def _process_intent(self, intent: Intent, cleaned_text: str, source: str) -> dict[str, Any]:
+        """Process intent after parsing (legacy flow without conversational AI)."""
+
+        if intent.name == "check_mood":
+            mood_percent = self._current_affection.get("mood_percent", 0.0)
+            risk_level = self._current_affection.get("risk_level", "low")
+            dominant = self._current_affection.get("dominant_emotion", "")
+            summary = self._current_affection.get("emotional_summary", "")
+            emotion_vec = self._current_affection.get("emotion_vector", {})
+            cognitive = self._current_affection.get("cognitive_state", {})
+
+            message = f"Current mood signal: {mood_percent:.1f}% ({risk_level})\n"
+            if dominant:
+                message += f"Dominant emotion: {dominant}\n"
+            if summary:
+                message += f"Analysis: {summary}\n"
+            if cognitive:
+                energy = cognitive.get("energy_level", 0)
+                burnout = cognitive.get("burnout_risk", 0)
+                load = cognitive.get("cognitive_load", 0)
+                message += f"Energy: {energy:.0%} | Cognitive load: {load:.0%} | Burnout risk: {burnout:.0%}\n"
+
+            intervention_msg = self._current_affection.get("intervention", {}).get("message", "")
+            if intervention_msg:
+                message += f"\n{intervention_msg}"
+
+            # Include proactive suggestions if any
+            proactive = self._current_affection.get("proactive_suggestions", [])
+            suggestions = list(self._current_affection.get("intervention", {}).get("suggestions", []))
+            for p in proactive:
+                if p.get("message"):
+                    suggestions.insert(0, p["message"])
+
+            return self._response(
+                "completed",
+                message.strip(),
+                source=source,
+                intent=intent,
+                suggestions=suggestions,
+            )
+
+        # Emotional check-in (full report with schedule context)
+        if intent.name == "emotional_check_in":
+            return self._handle_emotional_check_in(source, intent)
+
+        # Reschedule tasks based on emotional state
+        if intent.name == "reschedule_tasks":
+            return self._handle_reschedule_tasks(intent, source)
+
+        # Lighten load (auto-analyze and suggest)
+        if intent.name == "lighten_load":
+            return self._handle_lighten_load(intent, source)
+
+        # Check schedule
+        if intent.name == "check_schedule":
+            return self._handle_check_schedule(intent, source)
+
+        if self._should_pause_for_low_mood(intent.name):
+            return self._response(
+                "support_required",
+                self._current_affection.get("intervention", {}).get(
+                    "message",
+                    "Mood is critically low. Automation paused for safety.",
+                ),
+                source=source,
+                intent=intent,
+                suggestions=self._current_affection.get("intervention", {}).get("suggestions", []),
+            )
 
         if intent.name == "unknown":
             return self._response(
@@ -110,6 +443,7 @@ class PixelLinkRuntime:
                     "browse for machine learning tutorials",
                     "find file report.pdf",
                     "login to github",
+                    "check my mood",
                 ],
             )
         
@@ -235,6 +569,263 @@ class PixelLinkRuntime:
 
         return self._execute_intent(intent, source)
 
+    def _handle_emotional_check_in(self, source: str, intent: Intent) -> dict[str, Any]:
+        """Full emotional check-in with calendar context."""
+        try:
+            import asyncio
+            events, reminders = asyncio.run(
+                self.emotional_intelligence.gather_schedule_data()
+            )
+            affection = self._current_affection or {}
+            # Use AffectionAssessment to reconstruct for analysis
+            from core.nlu.affection_model import AffectionAssessment
+            assessment_obj = AffectionAssessment(
+                mood_percent=affection.get("mood_percent", 55),
+                risk_level=affection.get("risk_level", "low"),
+                should_intervene=affection.get("should_intervene", False),
+                should_pause_automation=affection.get("should_pause_automation", False),
+                variables=affection.get("variables", {}),
+                detected_signals=affection.get("detected_signals", {}),
+                intervention=affection.get("intervention", {}),
+                generated_at=affection.get("generated_at", ""),
+                emotion_vector=affection.get("emotion_vector", {}),
+                cognitive_state=affection.get("cognitive_state", {}),
+                trajectory=affection.get("trajectory", {}),
+                linguistic_analysis=affection.get("linguistic_analysis", {}),
+                schedule_awareness=affection.get("schedule_awareness", {}),
+                composite_emotions=affection.get("composite_emotions", []),
+                dominant_emotion=affection.get("dominant_emotion", ""),
+                dominant_intensity=affection.get("dominant_intensity", 0.0),
+                emotional_summary=affection.get("emotional_summary", ""),
+                proactive_suggestions=affection.get("proactive_suggestions", []),
+            )
+
+            analysis = self.emotional_intelligence.analyze_schedule_with_emotion(
+                assessment_obj, events, reminders
+            )
+
+            message = "--- Emotional Intelligence Report ---\n"
+            message += f"Mood: {affection.get('mood_percent', 0):.1f}% ({affection.get('risk_level', 'unknown')})\n"
+            message += f"Dominant emotion: {affection.get('dominant_emotion', 'unknown')}\n"
+            if affection.get("emotional_summary"):
+                message += f"Summary: {affection['emotional_summary']}\n"
+            message += f"\nEmotional capacity: {analysis.emotional_capacity:.0%}\n"
+            message += f"Schedule pressure: {analysis.schedule_pressure:.0%}\n"
+            message += f"Recommended max tasks: {analysis.recommended_max_tasks}\n"
+
+            if analysis.reschedule_recommendations:
+                message += f"\nI recommend rescheduling {len(analysis.reschedule_recommendations)} task(s):\n"
+                for rec in analysis.reschedule_recommendations:
+                    message += f"  - {rec.task_name}: {rec.reason}\n"
+                    message += f"    Suggested: move to {rec.suggested_date}\n"
+
+            message += f"\n{analysis.summary_message}"
+
+            suggestions = []
+            for rec in analysis.reschedule_recommendations:
+                suggestions.append(rec.action_command)
+            proactive = affection.get("proactive_suggestions", [])
+            for p in proactive:
+                if p.get("message"):
+                    suggestions.append(p["message"])
+
+            return self._response(
+                "completed", message.strip(), source=source, intent=intent, suggestions=suggestions
+            )
+        except Exception as e:
+            return self._response(
+                "completed",
+                f"Emotional check-in (limited): {self._current_affection.get('emotional_summary', 'Unable to generate full report.')}",
+                source=source, intent=intent,
+            )
+
+    def _handle_reschedule_tasks(self, intent: Intent, source: str) -> dict[str, Any]:
+        """Handle task rescheduling based on emotional state."""
+        try:
+            import asyncio
+            events, reminders = asyncio.run(
+                self.emotional_intelligence.gather_schedule_data()
+            )
+            affection = self._current_affection or {}
+            from core.nlu.affection_model import AffectionAssessment
+            assessment_obj = AffectionAssessment(
+                mood_percent=affection.get("mood_percent", 55),
+                risk_level=affection.get("risk_level", "low"),
+                should_intervene=affection.get("should_intervene", False),
+                should_pause_automation=affection.get("should_pause_automation", False),
+                variables=affection.get("variables", {}),
+                detected_signals=affection.get("detected_signals", {}),
+                intervention=affection.get("intervention", {}),
+                generated_at=affection.get("generated_at", ""),
+                emotion_vector=affection.get("emotion_vector", {}),
+                cognitive_state=affection.get("cognitive_state", {}),
+                trajectory=affection.get("trajectory", {}),
+                linguistic_analysis=affection.get("linguistic_analysis", {}),
+                schedule_awareness=affection.get("schedule_awareness", {}),
+                composite_emotions=affection.get("composite_emotions", []),
+                dominant_emotion=affection.get("dominant_emotion", ""),
+                dominant_intensity=affection.get("dominant_intensity", 0.0),
+                emotional_summary=affection.get("emotional_summary", ""),
+                proactive_suggestions=affection.get("proactive_suggestions", []),
+            )
+
+            analysis = self.emotional_intelligence.analyze_schedule_with_emotion(
+                assessment_obj, events, reminders
+            )
+
+            if not analysis.reschedule_recommendations:
+                return self._response(
+                    "completed",
+                    f"Your workload looks manageable (capacity: {analysis.emotional_capacity:.0%}). No tasks need rescheduling right now.",
+                    source=source, intent=intent,
+                )
+
+            message = f"Based on your emotional state ({affection.get('mood_percent', 0):.0f}% mood, {analysis.emotional_capacity:.0%} capacity):\n\n"
+            for i, rec in enumerate(analysis.reschedule_recommendations, 1):
+                message += f"{i}. {rec.task_name}\n"
+                message += f"   Reason: {rec.reason}\n"
+                message += f"   Move to: {rec.suggested_date}\n\n"
+
+            message += "Say 'confirm' to reschedule these tasks, or 'cancel' to keep them as is."
+
+            # Store recommendations as pending
+            self.session.set_pending_clarification({
+                "intent_name": "reschedule_tasks",
+                "clarification_type": "confirm_reschedule",
+                "recommendations": [
+                    {
+                        "task_name": r.task_name,
+                        "task_source": r.task_source,
+                        "suggested_date": r.suggested_date,
+                        "action_command": r.action_command,
+                    }
+                    for r in analysis.reschedule_recommendations
+                ],
+                "prompt": "Confirm or cancel the reschedule?",
+            })
+
+            return self._response(
+                "awaiting_clarification",
+                message.strip(),
+                source=source,
+                intent=intent,
+                pending_clarification=True,
+            )
+        except Exception as e:
+            return self._response(
+                "error",
+                f"Could not analyze schedule for rescheduling: {e}",
+                source=source, intent=intent,
+            )
+
+    def _handle_lighten_load(self, intent: Intent, source: str) -> dict[str, Any]:
+        """Auto-analyze and suggest load reduction."""
+        try:
+            import asyncio
+            events, reminders = asyncio.run(
+                self.emotional_intelligence.gather_schedule_data()
+            )
+            affection = self._current_affection or {}
+            from core.nlu.affection_model import AffectionAssessment
+            assessment_obj = AffectionAssessment(
+                mood_percent=affection.get("mood_percent", 55),
+                risk_level=affection.get("risk_level", "low"),
+                should_intervene=affection.get("should_intervene", False),
+                should_pause_automation=affection.get("should_pause_automation", False),
+                variables=affection.get("variables", {}),
+                detected_signals=affection.get("detected_signals", {}),
+                intervention=affection.get("intervention", {}),
+                generated_at=affection.get("generated_at", ""),
+                emotion_vector=affection.get("emotion_vector", {}),
+                cognitive_state=affection.get("cognitive_state", {}),
+                trajectory=affection.get("trajectory", {}),
+                linguistic_analysis=affection.get("linguistic_analysis", {}),
+                schedule_awareness=affection.get("schedule_awareness", {}),
+                composite_emotions=affection.get("composite_emotions", []),
+                dominant_emotion=affection.get("dominant_emotion", ""),
+                dominant_intensity=affection.get("dominant_intensity", 0.0),
+                emotional_summary=affection.get("emotional_summary", ""),
+                proactive_suggestions=affection.get("proactive_suggestions", []),
+            )
+
+            analysis = self.emotional_intelligence.analyze_schedule_with_emotion(
+                assessment_obj, events, reminders
+            )
+
+            message = analysis.summary_message
+            if analysis.reschedule_recommendations:
+                message += "\n\nSuggested changes:\n"
+                for rec in analysis.reschedule_recommendations:
+                    message += f"  - Move '{rec.task_name}' to {rec.suggested_date} ({rec.reason})\n"
+                message += "\nSay 'confirm' to apply these changes."
+
+                self.session.set_pending_clarification({
+                    "intent_name": "reschedule_tasks",
+                    "clarification_type": "confirm_reschedule",
+                    "recommendations": [
+                        {
+                            "task_name": r.task_name,
+                            "task_source": r.task_source,
+                            "suggested_date": r.suggested_date,
+                            "action_command": r.action_command,
+                        }
+                        for r in analysis.reschedule_recommendations
+                    ],
+                    "prompt": "Confirm or cancel?",
+                })
+
+                return self._response(
+                    "awaiting_clarification",
+                    message.strip(),
+                    source=source,
+                    intent=intent,
+                    pending_clarification=True,
+                )
+
+            return self._response(
+                "completed", message, source=source, intent=intent,
+            )
+        except Exception as e:
+            return self._response("error", f"Could not analyze workload: {e}", source=source, intent=intent)
+
+    def _handle_check_schedule(self, intent: Intent, source: str) -> dict[str, Any]:
+        """Show schedule with emotional context."""
+        try:
+            import asyncio
+            events, reminders = asyncio.run(
+                self.emotional_intelligence.gather_schedule_data()
+            )
+
+            message = "--- Your Schedule ---\n"
+            if events:
+                message += "\nCalendar events:\n"
+                for e in events[:10]:
+                    summary = e.get("summary", "Unknown")
+                    start = e.get("start", "")
+                    message += f"  - {summary} ({start})\n"
+            else:
+                message += "\nNo upcoming calendar events found.\n"
+
+            if reminders:
+                message += f"\nReminders ({len(reminders)}):\n"
+                for r in reminders[:10]:
+                    name = r if isinstance(r, str) else r.get("name", str(r))
+                    message += f"  - {name}\n"
+            else:
+                message += "\nNo reminders found.\n"
+
+            # Add emotional context
+            affection = self._current_affection or {}
+            capacity_info = affection.get("schedule_awareness", {})
+            if capacity_info:
+                message += f"\nSchedule density: {capacity_info.get('schedule_density', 0):.0%}"
+                message += f" | Tasks today: {capacity_info.get('tasks_today', 0)}"
+                message += f" | Free slots: {capacity_info.get('free_slots_today', 0)}"
+
+            return self._response("completed", message.strip(), source=source, intent=intent)
+        except Exception as e:
+            return self._response("error", f"Could not fetch schedule: {e}", source=source, intent=intent)
+
     def _execute_intent(self, intent: Intent, source: str) -> dict[str, Any]:
         steps = self.planner.plan(intent, self.session, self.guard)
         safety = self.guard.validate_plan(steps)
@@ -262,6 +853,38 @@ class PixelLinkRuntime:
                 intent=intent,
                 steps=steps,
             )
+
+        # Handle browser automation actions
+        if any(step.action.startswith("browser_") for step in steps):
+            import asyncio
+            for step in steps:
+                if step.action.startswith("browser_"):
+                    try:
+                        result = asyncio.run(self._execute_browser_action(step.action, step.params))
+                        if result.get("success"):
+                            return self._response(
+                                "completed",
+                                result.get("message", "Browser task completed successfully."),
+                                source=source,
+                                intent=intent,
+                                steps=steps,
+                            )
+                        else:
+                            return self._response(
+                                "error",
+                                result.get("message", "Browser task failed."),
+                                source=source,
+                                intent=intent,
+                                steps=steps,
+                            )
+                    except Exception as e:
+                        return self._response(
+                            "error",
+                            f"Browser automation error: {str(e)}",
+                            source=source,
+                            intent=intent,
+                            steps=steps,
+                        )
 
         result = self.executor.execute_steps(steps, self.guard)
         self._record_last_app(steps)
@@ -291,11 +914,55 @@ class PixelLinkRuntime:
     def _handle_clarification(self, user_reply: str, source: str) -> dict[str, Any]:
         if user_reply.lower() in {"cancel", "stop", "abort", "no", "nevermind", "never mind"}:
             self.session.clear_pending_clarification()
-            return self._response("canceled", "Clarification canceled.", source=source)
+            self._conversational_ai.clear_pending_action()
+            return self._response("canceled", "Action canceled. What else can I help you with?", source=source)
 
         pending = self.session.pending_clarification or {}
         intent_name = pending.get("intent_name", "")
         clarification_type = pending.get("clarification_type", "")
+
+        # Handle conversational AI clarifications
+        if clarification_type == "conversational_ai":
+            # Re-analyze with the additional context from user's reply
+            self.session.clear_pending_clarification()
+            original_text = pending.get("original_text", "")
+            combined_context = f"{original_text} {user_reply}"
+            return self._handle_conversational_input(combined_context, source)
+
+        # Handle sensitive action confirmations
+        if clarification_type == "confirm_sensitive_action":
+            if user_reply.lower() in {"yes", "y", "confirm", "ok", "okay", "sure", "proceed", "go ahead", "do it"}:
+                # User confirmed - execute the pending action
+                entities = pending.get("entities", {})
+                confirmation_summary = pending.get("confirmation_summary", "")
+
+                resolved_intent = Intent(
+                    name=intent_name,
+                    entities=entities,
+                    confidence=0.95,
+                    raw_text=pending.get("original_text", ""),
+                )
+
+                self.session.clear_pending_clarification()
+                self._conversational_ai.clear_pending_action()
+                self.session.record_intent(resolved_intent.name, resolved_intent.raw_text)
+
+                # Execute with completion message
+                result = self._execute_intent_with_completion(resolved_intent, source)
+
+                # Add confirmation that we executed what was confirmed
+                if result.get("status") == "completed":
+                    result["message"] = f"✓ Confirmed and executed.\n\n{result.get('message', '')}"
+
+                return result
+            else:
+                self.session.clear_pending_clarification()
+                self._conversational_ai.clear_pending_action()
+                return self._response(
+                    "canceled",
+                    "Action canceled. I won't proceed with that. What else can I help you with?",
+                    source=source
+                )
 
         if intent_name == "send_text":
             target = (pending.get("target", "") or "").strip()
@@ -315,7 +982,17 @@ class PixelLinkRuntime:
             )
             self.session.clear_pending_clarification()
             self.session.record_intent(resolved_intent.name, resolved_intent.raw_text)
-            return self._execute_intent(resolved_intent, source)
+            return self._execute_intent_with_completion(resolved_intent, source)
+
+        if intent_name == "reschedule_tasks" and clarification_type == "confirm_reschedule":
+            # User confirmed rescheduling
+            if user_reply.lower() in {"yes", "y", "confirm", "ok", "okay", "sure", "proceed", "go ahead", "do it"}:
+                self.session.clear_pending_clarification()
+                recommendations = pending.get("recommendations", [])
+                return self._execute_reschedule(recommendations, source)
+            else:
+                self.session.clear_pending_clarification()
+                return self._response("canceled", "Reschedule canceled. Your tasks remain as is.", source=source)
 
         self.session.clear_pending_clarification()
         return self._response("error", "Unable to resolve clarification context.", source=source)
@@ -357,11 +1034,54 @@ class PixelLinkRuntime:
         except Exception as e:
             return {"error": f"MCP execution failed: {str(e)}"}
 
+    def _execute_reschedule(self, recommendations: list[dict], source: str) -> dict[str, Any]:
+        """Execute the rescheduling of tasks based on recommendations."""
+        results = []
+        for rec in recommendations:
+            task_name = rec.get("task_name", "")
+            task_source = rec.get("task_source", "reminder")
+            suggested_date = rec.get("suggested_date", "")
+
+            if task_source == "reminder" and suggested_date:
+                # Create a new reminder with the due date
+                tool = self.mcp_tools.get("reminders_create_reminder")
+                if tool:
+                    try:
+                        import asyncio
+                        asyncio.run(tool(
+                            list_name="Reminders",
+                            name=f"{task_name} (rescheduled)",
+                            body=f"Moved from today due to emotional wellbeing. Original: {task_name}",
+                            due_date_iso=f"{suggested_date}T09:00:00",
+                        ))
+                        results.append(f"Moved '{task_name}' to {suggested_date}")
+                    except Exception as e:
+                        results.append(f"Failed to move '{task_name}': {e}")
+                else:
+                    results.append(f"Would move '{task_name}' to {suggested_date} (reminder tool unavailable)")
+            elif task_source == "calendar":
+                results.append(f"Calendar event '{task_name}' flagged for rescheduling to {suggested_date} (manual action needed)")
+            else:
+                results.append(f"'{task_name}' noted for rescheduling to {suggested_date}")
+
+        self.emotional_intelligence.invalidate_cache()
+
+        message = "Rescheduling complete:\n" + "\n".join(f"  - {r}" for r in results)
+        message += "\n\nTake care of yourself. I've lightened your load."
+
+        return self._response("completed", message, source=source)
+
     def _record_last_app(self, steps: list[Any]) -> None:
         for step in steps:
             if step.action in {"open_app", "focus_app"}:
                 self.session.set_last_app(step.params.get("app", ""))
                 break
+
+    def _should_pause_for_low_mood(self, intent_name: str) -> bool:
+        affection = self._current_affection or {}
+        if not affection.get("should_pause_automation"):
+            return False
+        return intent_name not in {"check_mood", "confirm", "cancel"}
 
     def _response(
         self,
@@ -390,6 +1110,14 @@ class PixelLinkRuntime:
         if intent is not None:
             serialized_intent = asdict(intent)
 
+        active_affection = self._current_affection or self.session.last_affection or {}
+        intervention = active_affection.get("intervention", {})
+        intervention_suggestions = intervention.get("suggestions", []) if active_affection.get("should_intervene") else []
+        final_suggestions = _merge_unique_suggestions(suggestions or [], intervention_suggestions)
+        affection_notice = ""
+        if active_affection.get("should_intervene") and status not in {"blocked", "error", "support_required"}:
+            affection_notice = intervention.get("message", "")
+
         return {
             "status": status,
             "message": message,
@@ -401,7 +1129,14 @@ class PixelLinkRuntime:
             "clarification_prompt": (self.session.pending_clarification or {}).get("prompt", ""),
             "last_app": self.session.last_app,
             "history_count": len(self.session.history),
-            "suggestions": suggestions or [],
+            "suggestions": final_suggestions,
+            "affection": active_affection,
+            "affection_notice": affection_notice,
+            "emotion_vector": active_affection.get("emotion_vector", {}),
+            "dominant_emotion": active_affection.get("dominant_emotion", ""),
+            "emotional_summary": active_affection.get("emotional_summary", ""),
+            "cognitive_state": active_affection.get("cognitive_state", {}),
+            "proactive_suggestions": active_affection.get("proactive_suggestions", []),
         }
 
 
@@ -415,3 +1150,20 @@ def _clean_clarified_target(value: str) -> str:
     )
     cleaned = " ".join(cleaned.split())
     return cleaned.strip().strip('"').strip("'").strip("“”")
+
+
+def _merge_unique_suggestions(primary: list[str], secondary: list[str], limit: int = 8) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for value in primary + secondary:
+        normalized = value.strip()
+        if not normalized:
+            continue
+        lowered = normalized.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        merged.append(normalized)
+        if len(merged) >= limit:
+            break
+    return merged

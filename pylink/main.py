@@ -10,6 +10,11 @@ from datetime import datetime
 from typing import Optional
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+# Load environment variables from .env file (checks current and parent directories)
+load_dotenv()
+
 from core.input.text_input import read_text_input
 from core.runtime.orchestrator import DEFAULT_PERMISSION_PROFILE, PixelLinkRuntime
 
@@ -33,6 +38,11 @@ def _parse_args() -> argparse.Namespace:
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
         description="PixelLink - Intent-driven accessibility operating layer"
+    )
+    parser.add_argument(
+        "--cli", "-c",
+        action="store_true",
+        help="Run in CLI mode instead of launching Electron UI",
     )
     parser.add_argument(
         "--voice",
@@ -114,6 +124,7 @@ def launch_electron_ui() -> None:
 
 def run_cli_mode() -> None:
     """Run the original CLI mode"""
+    args = _parse_args()
     _setup_logging()
 
     # Initialize voice controller if voice mode enabled
@@ -192,79 +203,13 @@ def run_cli_mode() -> None:
     if voice_controller:
         voice_controller.speak("PixelLink is ready. How can I help you?", blocking=True)
 
-    while True:
-        # Get input (voice or text)
-        if voice_controller and not args.tts_only:
-            from core.voice.voice_controller import read_voice_input
-            input_data = read_voice_input(voice_controller)
-        else:
-            input_data = read_text_input()
-
-        raw_text = input_data["raw_text"]
-
-        if not raw_text:
-            continue
-        if raw_text.lower() in {"exit", "quit", "goodbye", "bye"}:
-            _output("Goodbye!", voice_controller)
-            break
-
-        intent = parse_intent(raw_text, session)
-        session.record_intent(intent.name, raw_text)
-
-        if session.pending_steps:
-            if intent.name == "confirm":
-                result = executor.execute_steps(session.pending_steps, guard)
-                session.clear_pending()
-                if not result.completed:
-                    _output("Execution halted.", voice_controller)
-                continue
-            if intent.name == "cancel":
-                session.clear_pending()
-                _output("Pending actions canceled.", voice_controller)
-                continue
-
-        if intent.name == "unknown":
-            _output("Sorry, I didn't understand that.", voice_controller)
-            _output("Try: 'open Notes', 'type hello', or 'reply email saying I'll send it tomorrow'", voice_controller)
-            continue
-
-        steps = planner.plan(intent, session, guard)
-        print("Planned steps:")
-        for index, step in enumerate(steps, start=1):
-            print(f"  {index}. {step.action} - {step.description}")
-
-        safety = guard.validate_plan(steps)
-        if not safety.allowed:
-            _output(safety.reason, voice_controller)
-            continue
-
-        logging.info("Intent: %s | Steps: %s", intent.name, [s.action for s in steps])
-        result = executor.execute_steps(steps, guard)
-
-        # Track last app for context
-        for step in steps:
-            if step.action in {"open_app", "focus_app"}:
-                session.set_last_app(step.params.get("app", ""))
-                break
-
-        if result.pending_steps:
-            session.set_pending(result.pending_steps)
-            _output("Awaiting confirmation to proceed. Say 'confirm' or 'cancel'.", voice_controller)
-        elif result.completed:
-            _output("Task completed successfully.", voice_controller)
-        else:
-            _output("Task did not complete.", voice_controller)
-
-    kill_switch.stop()
-    if voice_controller:
-        voice_controller.cleanup()
     print("\nPixelLink started. Type 'exit' to quit. Press ESC for kill switch.")
-    print("\nℹ️  New features:")
-    print("  - Enhanced web search (try: 'browse for python tutorials')")
-    print("  - Browsing history tracking")
-    print("  - File system context (indexing files in background...)")
-    print("  - Smart app opening (focuses if already running)")
-    print("  - Autofill passwords (try: 'login to github')")
+    print("\nℹ️  Features:")
+    print("  - Advanced emotional intelligence (Plutchik's 8 emotions, burnout detection, sarcasm awareness)")
+    print("  - Calendar & todo-aware mood analysis (auto-suggests rescheduling)")
+    print("  - Try: 'check my mood' | 'how am i' | 'lighten my load' | 'reschedule tasks'")
+    print("  - Try: 'show my schedule today' | 'move tasks to tomorrow'")
+    print("  - Enhanced web search, file context, autofill passwords")
     print("  - Type 'context' to see current context summary")
 
     try:

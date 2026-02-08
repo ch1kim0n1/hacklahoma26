@@ -10,7 +10,9 @@ import math
 import threading
 import wave
 import tempfile
-from typing import Optional, Callable
+import time
+from pathlib import Path
+from typing import Any, Optional, Callable
 
 from dotenv import load_dotenv
 
@@ -30,6 +32,15 @@ class SpeechToText:
     # Whisper model options: "tiny", "base", "small", "medium", "large-v3"
     # Smaller = faster, larger = more accurate
     DEFAULT_MODEL = "base"
+    MODEL_REPOS = {
+        "tiny": "Systran/faster-whisper-tiny",
+        "base": "Systran/faster-whisper-base",
+        "small": "Systran/faster-whisper-small",
+        "medium": "Systran/faster-whisper-medium",
+        "large-v1": "Systran/faster-whisper-large-v1",
+        "large-v2": "Systran/faster-whisper-large-v2",
+        "large-v3": "Systran/faster-whisper-large-v3",
+    }
 
     def __init__(
         self,
@@ -58,8 +69,27 @@ class SpeechToText:
         self._is_listening = False
         self._stop_listening = False
         self._listen_lock = threading.Lock()
+        self._model_lock = threading.Lock()
+        self._status_lock = threading.Lock()
         self._pyaudio = None
         self.last_error: Optional[str] = None
+        self.cache_root = Path(
+            os.getenv(
+                "PIXELINK_WHISPER_CACHE_DIR",
+                str(Path.home() / ".cache" / "pixelink" / "whisper"),
+            )
+        ).expanduser()
+        self.cache_root.mkdir(parents=True, exist_ok=True)
+        self._model_status: dict[str, Any] = {
+            "model": self.model_size,
+            "state": "idle",
+            "stage": "idle",
+            "message": "Whisper model is idle.",
+            "progress": 0,
+            "cached": None,
+            "error": "",
+            "updated_at": time.time(),
+        }
 
         logging.info(
             "SpeechToText initialized with model=%s, device=%s",
@@ -70,17 +100,211 @@ class SpeechToText:
     @property
     def model(self):
         """Lazy-load Whisper model."""
-        if self._model is None:
-            from faster_whisper import WhisperModel
-
-            # Use CPU with int8 for efficiency, or CUDA if available
-            self._model = WhisperModel(
-                self.model_size,
-                device=self.device,
-                compute_type=self.compute_type,
-            )
-            logging.info("Whisper model loaded: %s", self.model_size)
+        if self._model is None and not self.ensure_model_loaded():
+            raise RuntimeError("Failed to load Whisper model")
         return self._model
+
+    @property
+    def model_status(self) -> dict[str, Any]:
+        """Current model loading/downloading status."""
+        with self._status_lock:
+            return dict(self._model_status)
+
+    def _set_model_status(self, **updates: Any) -> dict[str, Any]:
+        with self._status_lock:
+            self._model_status.update(updates)
+            self._model_status["updated_at"] = time.time()
+            return dict(self._model_status)
+
+    def _notify_model_status(
+        self, callback: Optional[Callable[[dict[str, Any]], None]]
+    ) -> None:
+        if not callback:
+            return
+        try:
+            callback(self.model_status)
+        except Exception:
+            # Status callbacks should never break model loading.
+            pass
+
+    def _resolve_model_reference(
+        self, progress_callback: Optional[Callable[[dict[str, Any]], None]] = None
+    ) -> tuple[str, Optional[bool]]:
+        """Resolve a local model reference, downloading if needed.
+
+        Returns:
+            Tuple of (model_reference, cached_flag).
+            cached_flag is True/False for known repository models, None otherwise.
+        """
+        repo_id = self.MODEL_REPOS.get(self.model_size)
+        if not repo_id:
+            return self.model_size, None
+
+        try:
+            from huggingface_hub import snapshot_download
+            from tqdm.auto import tqdm as base_tqdm
+        except Exception:
+            # Fall back to faster-whisper's internal downloader.
+            return self.model_size, None
+
+        cache_dir = str(self.cache_root)
+        try:
+            model_path = snapshot_download(
+                repo_id=repo_id,
+                cache_dir=cache_dir,
+                local_files_only=True,
+            )
+            self._set_model_status(
+                state="loading",
+                stage="cache_hit",
+                message=f"Using cached Whisper model '{self.model_size}'.",
+                progress=100,
+                cached=True,
+                error="",
+            )
+            self._notify_model_status(progress_callback)
+            return model_path, True
+        except Exception:
+            pass
+
+        self._set_model_status(
+            state="loading",
+            stage="downloading",
+            message=f"Downloading Whisper model '{self.model_size}' (first run can take a minute).",
+            progress=0,
+            cached=False,
+            error="",
+        )
+        self._notify_model_status(progress_callback)
+
+        outer = self
+
+        class DownloadProgressTqdm(base_tqdm):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self._last_percent = -1
+                self._emit(force=True)
+
+            def update(self, n=1):
+                result = super().update(n)
+                self._emit()
+                return result
+
+            def close(self):
+                self._emit(force=True)
+                return super().close()
+
+            def _emit(self, force: bool = False):
+                percent: Optional[int] = None
+                if self.total:
+                    percent = max(0, min(100, int((self.n / self.total) * 100)))
+                if not force and percent == self._last_percent:
+                    return
+                self._last_percent = percent
+                outer._set_model_status(
+                    state="loading",
+                    stage="downloading",
+                    message=f"Downloading Whisper model '{outer.model_size}'...",
+                    progress=percent if percent is not None else 0,
+                    cached=False,
+                    error="",
+                )
+                outer._notify_model_status(progress_callback)
+
+        model_path = snapshot_download(
+            repo_id=repo_id,
+            cache_dir=cache_dir,
+            local_files_only=False,
+            tqdm_class=DownloadProgressTqdm,
+        )
+        return model_path, False
+
+    def ensure_model_loaded(
+        self, progress_callback: Optional[Callable[[dict[str, Any]], None]] = None
+    ) -> bool:
+        """Ensure Whisper model is loaded and ready for transcription."""
+        if self._model is not None:
+            self._set_model_status(
+                state="ready",
+                stage="ready",
+                message=f"Whisper model '{self.model_size}' is ready.",
+                progress=100,
+                error="",
+            )
+            self._notify_model_status(progress_callback)
+            return True
+
+        with self._model_lock:
+            if self._model is not None:
+                self._set_model_status(
+                    state="ready",
+                    stage="ready",
+                    message=f"Whisper model '{self.model_size}' is ready.",
+                    progress=100,
+                    error="",
+                )
+                self._notify_model_status(progress_callback)
+                return True
+
+            self._set_model_status(
+                state="loading",
+                stage="checking_cache",
+                message=f"Checking cache for Whisper model '{self.model_size}'...",
+                progress=5,
+                error="",
+            )
+            self._notify_model_status(progress_callback)
+
+            try:
+                model_reference, cached = self._resolve_model_reference(progress_callback)
+
+                from faster_whisper import WhisperModel
+
+                self._set_model_status(
+                    state="loading",
+                    stage="loading_model",
+                    message=f"Loading Whisper model '{self.model_size}' into memory...",
+                    progress=95,
+                    cached=cached,
+                    error="",
+                )
+                self._notify_model_status(progress_callback)
+
+                self._model = WhisperModel(
+                    model_reference,
+                    device=self.device,
+                    compute_type=self.compute_type,
+                    download_root=str(self.cache_root),
+                )
+                self._set_model_status(
+                    state="ready",
+                    stage="ready",
+                    message=f"Whisper model '{self.model_size}' is ready.",
+                    progress=100,
+                    cached=cached,
+                    error="",
+                )
+                self._notify_model_status(progress_callback)
+                logging.info("Whisper model loaded: %s", self.model_size)
+                return True
+            except Exception as exc:
+                self.last_error = f"{type(exc).__name__}: {exc}"
+                self._set_model_status(
+                    state="error",
+                    stage="failed",
+                    message=f"Failed to load Whisper model '{self.model_size}'.",
+                    progress=0,
+                    error=self.last_error,
+                )
+                self._notify_model_status(progress_callback)
+                logging.exception("Failed to load Whisper model")
+                return False
+
+    def warm_up(
+        self, progress_callback: Optional[Callable[[dict[str, Any]], None]] = None
+    ) -> bool:
+        """Warm up STT model ahead of first voice command."""
+        return self.ensure_model_loaded(progress_callback=progress_callback)
 
     def _get_pyaudio(self):
         """Lazy-load PyAudio instance."""
@@ -106,6 +330,9 @@ class SpeechToText:
             self.last_error = None
 
             try:
+                if not self.ensure_model_loaded():
+                    return ""
+
                 if prompt_callback:
                     prompt_callback("listening")
 
@@ -226,7 +453,7 @@ class SpeechToText:
 
         try:
             # Transcribe with Whisper
-            segments, info = self.model.transcribe(
+            segments, _info = self.model.transcribe(
                 temp_path,
                 language="en",
                 beam_size=5,
