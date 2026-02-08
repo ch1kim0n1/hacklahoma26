@@ -23,5 +23,10 @@ contextBridge.exposeInMainWorld("pixelink", {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on("runtime:bridge-log", listener);
     return () => ipcRenderer.removeListener("runtime:bridge-log", listener);
+  },
+  onVoiceModelStatus: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("runtime:voice-model-status", listener);
+    return () => ipcRenderer.removeListener("runtime:voice-model-status", listener);
   }
 });

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Optional, Callable
+from typing import Any, Optional, Callable
 
 from core.voice.tts import TextToSpeech
 from core.voice.stt import SpeechToText
@@ -65,12 +65,43 @@ class VoiceController:
 
         self._is_active = False
         self._stop_event = threading.Event()
+        self._stt_warmup_thread: Optional[threading.Thread] = None
 
         logging.info(
             "VoiceController initialized (TTS=%s, STT=%s)",
             "enabled" if self._tts else "disabled",
             "enabled" if self._stt else "disabled",
         )
+
+    def warm_stt(
+        self, status_callback: Optional[Callable[[dict[str, Any]], None]] = None
+    ) -> bool:
+        """Synchronously warm up the STT model."""
+        if not self._stt or not self.enable_stt:
+            return False
+        return self._stt.warm_up(progress_callback=status_callback)
+
+    def warm_stt_async(
+        self, status_callback: Optional[Callable[[dict[str, Any]], None]] = None
+    ) -> bool:
+        """Warm up STT model in a background thread."""
+        if not self._stt or not self.enable_stt:
+            return False
+        if self._stt_warmup_thread and self._stt_warmup_thread.is_alive():
+            return True
+
+        def _run() -> None:
+            try:
+                self._stt.warm_up(progress_callback=status_callback)
+            except Exception as exc:
+                self._init_errors["stt_warmup"] = str(exc)
+                logging.info("Failed to warm up STT model: %s", exc)
+
+        self._stt_warmup_thread = threading.Thread(
+            target=_run, name="stt-warmup", daemon=True
+        )
+        self._stt_warmup_thread.start()
+        return True
 
     def speak(self, text: str, blocking: bool = True) -> bool:
         """Speak text using TTS.
@@ -252,6 +283,21 @@ class VoiceController:
         if self._stt and getattr(self._stt, "last_error", None):
             return str(self._stt.last_error)
         return ""
+
+    @property
+    def stt_model_status(self) -> dict[str, Any]:
+        """Current STT model status."""
+        if self._stt and hasattr(self._stt, "model_status"):
+            return self._stt.model_status
+        return {
+            "model": "",
+            "state": "unavailable",
+            "stage": "unavailable",
+            "message": "Voice input is unavailable.",
+            "progress": 0,
+            "cached": None,
+            "error": "",
+        }
 
 
 def read_voice_input(voice: VoiceController, prompt: str = "") -> dict:
