@@ -209,6 +209,50 @@ class ActionPlanner:
                 )
             )
 
+        elif name == "reschedule_tasks":
+            # Handled by orchestrator directly (needs emotional intelligence engine)
+            steps.append(
+                ActionStep(
+                    "emotional_reschedule",
+                    {
+                        "target": intent.entities.get("target", "heavy"),
+                        "target_day": intent.entities.get("target_day", "tomorrow"),
+                    },
+                    False,
+                    "Analyze and reschedule tasks based on emotional state",
+                )
+            )
+
+        elif name == "lighten_load":
+            steps.append(
+                ActionStep(
+                    "emotional_lighten",
+                    {"scope": intent.entities.get("scope", "today")},
+                    False,
+                    "Analyze workload and suggest reductions",
+                )
+            )
+
+        elif name == "check_schedule":
+            steps.append(
+                ActionStep(
+                    "mcp_get_events",
+                    {"timeframe": intent.entities.get("timeframe", "today")},
+                    False,
+                    "Fetch and display schedule",
+                )
+            )
+
+        elif name == "emotional_check_in":
+            steps.append(
+                ActionStep(
+                    "emotional_check_in",
+                    {},
+                    False,
+                    "Generate comprehensive emotional intelligence report",
+                )
+            )
+
         return steps
 
 

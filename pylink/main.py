@@ -259,12 +259,12 @@ def run_cli_mode() -> None:
     if voice_controller:
         voice_controller.cleanup()
     print("\nPixelLink started. Type 'exit' to quit. Press ESC for kill switch.")
-    print("\nℹ️  New features:")
-    print("  - Enhanced web search (try: 'browse for python tutorials')")
-    print("  - Browsing history tracking")
-    print("  - File system context (indexing files in background...)")
-    print("  - Smart app opening (focuses if already running)")
-    print("  - Autofill passwords (try: 'login to github')")
+    print("\nℹ️  Features:")
+    print("  - Advanced emotional intelligence (Plutchik's 8 emotions, burnout detection, sarcasm awareness)")
+    print("  - Calendar & todo-aware mood analysis (auto-suggests rescheduling)")
+    print("  - Try: 'check my mood' | 'how am i' | 'lighten my load' | 'reschedule tasks'")
+    print("  - Try: 'show my schedule today' | 'move tasks to tomorrow'")
+    print("  - Enhanced web search, file context, autofill passwords")
     print("  - Type 'context' to see current context summary")
 
     try:

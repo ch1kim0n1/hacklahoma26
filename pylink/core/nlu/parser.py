@@ -239,6 +239,57 @@ def parse_intent(text: str, context=None) -> Intent:
     if lowered in {"cancel", "stop", "abort", "no", "n", "nevermind", "nope", "never mind"}:
         return Intent(name="cancel", confidence=1.0, raw_text=text)
 
+    if re.search(r"\b(check|show|analyze|what(?:'s| is)|how)\b", cleaned) and re.search(
+        r"\b(mood|affection|emotional state|emotion)\b",
+        cleaned,
+    ):
+        return Intent(name="check_mood", confidence=0.9, raw_text=text)
+
+    # Reschedule / lighten load intents (emotion-driven task management)
+    if re.search(r"\b(reschedule|move|defer|postpone|push back|delay)\b", cleaned) and re.search(
+        r"\b(tasks?|todos?|reminders?|items?|things?|stuff|everything)\b", cleaned
+    ):
+        target = "all" if re.search(r"\b(all|everything|remaining|rest)\b", cleaned) else "heavy"
+        target_day = ""
+        day_match = re.search(r"\b(?:to|until|for)\s+(tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next week)\b", cleaned)
+        if day_match:
+            target_day = day_match.group(1)
+        return Intent(
+            name="reschedule_tasks",
+            entities={"target": target, "target_day": target_day},
+            confidence=0.88,
+            raw_text=text,
+        )
+
+    if re.search(r"\b(lighten|reduce|clear|simplify|ease)\b", cleaned) and re.search(
+        r"\b(load|schedule|calendar|tasks|day|plate|workload)\b", cleaned
+    ):
+        return Intent(
+            name="lighten_load",
+            entities={"scope": "today"},
+            confidence=0.86,
+            raw_text=text,
+        )
+
+    if re.search(r"\b(what|show|list|check)\b", cleaned) and re.search(
+        r"\b(schedule|calendar|events|agenda|plan|tasks|reminders|todo)\b", cleaned
+    ) and re.search(r"\b(today|tomorrow|this week|upcoming)\b", cleaned):
+        timeframe = "today"
+        if "tomorrow" in cleaned:
+            timeframe = "tomorrow"
+        elif "this week" in cleaned or "upcoming" in cleaned:
+            timeframe = "week"
+        return Intent(
+            name="check_schedule",
+            entities={"timeframe": timeframe},
+            confidence=0.87,
+            raw_text=text,
+        )
+
+    # Emotional check-in with context (more detailed than check_mood)
+    if re.search(r"\b(how am i|am i okay|am i alright|how do i seem|emotional report|full mood)\b", cleaned):
+        return Intent(name="emotional_check_in", confidence=0.9, raw_text=text)
+
     # File search - check early before general search patterns
     if re.search(r"\b(find file|search file|locate file|find document|search for file|search document)\b", cleaned):
         query = _extract_after_keywords(

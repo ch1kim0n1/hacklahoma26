@@ -366,6 +366,17 @@ def main() -> int:
                 continue
 
             if action == "get_state":
+                _write_json(
+                    {
+                        "status": "state",
+                        "pending_confirmation": bool(runtime.session.pending_steps),
+                        "pending_clarification": bool(runtime.session.pending_clarification),
+                        "clarification_prompt": (runtime.session.pending_clarification or {}).get("prompt", ""),
+                        "last_app": runtime.session.last_app,
+                        "history_count": len(runtime.session.history),
+                        "affection": runtime.session.last_affection,
+                    }
+                )
                 response = {
                     "status": "state",
                     **_runtime_state(runtime),
