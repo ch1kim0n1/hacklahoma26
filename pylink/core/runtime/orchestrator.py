@@ -59,6 +59,8 @@ DEFAULT_PERMISSION_PROFILE = {
 
 
 class MaesRuntime:
+    """Runtime orchestrator (alias PixelLinkRuntime for backward compatibility)."""
+
     def __init__(
         self,
         *,
@@ -1429,3 +1431,7 @@ def _compact_for_concise_narration(message: str) -> str:
         return text
     sentence_split = re.split(r"(?<=[.!?])\s+", text)
     return sentence_split[0][:220].strip()
+
+
+# Backward compatibility for code that imports PixelLinkRuntime
+PixelLinkRuntime = MaesRuntime
