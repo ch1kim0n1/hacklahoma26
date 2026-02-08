@@ -1,0 +1,59 @@
+html,
+body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  font-family: "SF Pro Text", "Avenir Next", "Helvetica Neue", sans-serif;
+}
+
+.launcher-btn {
+  width: 62px;
+  height: 62px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  background: linear-gradient(160deg, rgba(17, 34, 56, 0.95), rgba(29, 54, 92, 0.95));
+  color: #fff;
+  position: relative;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 16px 28px rgba(16, 24, 36, 0.35);
+  cursor: pointer;
+}
+
+.launcher-btn:hover {
+  transform: translateY(-1px);
+}
+
+.launcher-btn:active {
+  transform: translateY(1px);
+}
+
+.label {
+  font-size: 0.92rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.dot {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.status-online {
+  background: #3dc17e;
+}
+
+.status-warn {
+  background: #ffbf47;
+}
+
+.status-offline {
+  background: #ff5f57;
+}
+

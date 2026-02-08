@@ -161,14 +161,42 @@ PixelLink is **local-first** by design.
 
 * Python (NLU + execution)
 * OS automation libraries
-* Local WebSocket or TCP for device bridge
-* Cloud LLM (openAI)
-* Vision models for face or gesture input
+* Electron desktop shell (SwiftUI-inspired design language)
+* Local desktop bridge process (JSON over stdin/stdout)
+* Local HTTP phone bridge for confirmation controls
 
 ### Optional
 
 * On-device LLM
 * Cross-platform UI framework
+
+---
+
+## Desktop App (Electron)
+
+Run the new production-style desktop UI:
+
+```bash
+cd electron
+npm install
+npm run start
+```
+
+Safe test mode (no real keyboard/mouse automation):
+
+```bash
+npm run start:dry-run
+```
+
+See details in `electron/README.md`.
+
+---
+
+## Mission Implementation Plan
+
+The full mission feature implementation map is documented in:
+
+`MISSION_IMPLEMENTATION_PLAN.md`
 
 ---
 
@@ -222,6 +250,23 @@ PixelLink is **local-first** by design.
 * Multi-device ecosystem
 * Research partnerships
 * Accessibility standardization
+
 ## Mission
 
 PixelLink exists to remove physical barriers between people and technology—by letting intent, not ability, define access.
+
+---
+
+## Plugins (Google & Reminders)
+
+### Google (Calendar, Gmail)
+
+**If you push this repo, other people do *not* get access to your Google account.** OAuth is **per-user**:
+
+- **Do not commit** `credentials.json` or `token.json` / `token_gmail.json` (they are in `.gitignore`).
+- Each user clones the repo, adds their own OAuth client (or uses a shared client ID) and runs the app **once** to sign in in the browser. That creates a **personal** token on their machine.
+- So: pushing the repo only shares the *code*. Each user must run the app and complete the Google sign-in on their own machine to use Calendar/Gmail.
+
+### Apple Reminders (Mac only)
+
+The `reminders-mcp` plugin is loaded only on **macOS** (`darwin`). It uses the native Reminders app via AppleScript. Add `"reminders-mcp": {}` to your plugin config to use it.

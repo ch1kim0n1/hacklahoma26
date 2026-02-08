@@ -12,3 +12,12 @@ class MouseController:
             pyautogui.click(button=button)
         else:
             pyautogui.click(x, y, button=button)
+
+    def double_click(self, x: int | None = None, y: int | None = None, button: str = "left") -> None:
+        if x is None or y is None:
+            pyautogui.doubleClick(button=button)
+        else:
+            pyautogui.doubleClick(x, y, button=button)
+
+    def scroll(self, amount: int) -> None:
+        pyautogui.scroll(amount)
