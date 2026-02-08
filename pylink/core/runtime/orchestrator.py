@@ -7,6 +7,7 @@ from typing import Any
 from core.context.session import SessionContext
 from core.executor.engine import ExecutionEngine
 from core.nlu.affection_model import AffectionNLUModel
+from core.nlu.emotional_intelligence import EmotionalIntelligenceEngine
 from core.nlu.intents import Intent
 from core.nlu.parser import parse_intent
 from core.planner.action_planner import ActionPlanner
@@ -37,6 +38,9 @@ DEFAULT_PERMISSION_PROFILE = {
     "mcp_get_events": True,
     "mcp_create_event": True,
     "autofill_login": True,
+    "emotional_reschedule": True,
+    "emotional_lighten": True,
+    "emotional_check_in": True,
 }
 
 
@@ -66,6 +70,7 @@ class PixelLinkRuntime:
             low_threshold=mood_low_threshold,
             critical_threshold=mood_critical_threshold,
         )
+        self.emotional_intelligence = EmotionalIntelligenceEngine(mcp_tools=self.mcp_tools)
         self._current_affection: dict[str, Any] | None = None
         self.executor.set_speed(speed)
         self.guard.set_allowed_actions(permission_profile or DEFAULT_PERMISSION_PROFILE)
@@ -95,6 +100,19 @@ class PixelLinkRuntime:
             return self._response("idle", "No input provided.", source=source)
 
         affection_assessment = self.affection_nlu.analyze(cleaned_text, self.session)
+
+        # Enrich with real calendar/reminder data when available
+        try:
+            import asyncio
+            events, reminders = asyncio.run(
+                self.emotional_intelligence.gather_schedule_data()
+            )
+            affection_assessment = self.affection_nlu.enrich_with_schedule(
+                affection_assessment, events, reminders
+            )
+        except Exception:
+            events, reminders = [], []
+
         self._current_affection = affection_assessment.to_dict()
         self.session.record_affection(self._current_affection, cleaned_text)
 
@@ -110,17 +128,56 @@ class PixelLinkRuntime:
         if intent.name == "check_mood":
             mood_percent = self._current_affection.get("mood_percent", 0.0)
             risk_level = self._current_affection.get("risk_level", "low")
-            message = (
-                f"Current mood signal: {mood_percent:.1f}% ({risk_level}). "
-                f"{self._current_affection.get('intervention', {}).get('message', '')}"
-            ).strip()
+            dominant = self._current_affection.get("dominant_emotion", "")
+            summary = self._current_affection.get("emotional_summary", "")
+            emotion_vec = self._current_affection.get("emotion_vector", {})
+            cognitive = self._current_affection.get("cognitive_state", {})
+
+            message = f"Current mood signal: {mood_percent:.1f}% ({risk_level})\n"
+            if dominant:
+                message += f"Dominant emotion: {dominant}\n"
+            if summary:
+                message += f"Analysis: {summary}\n"
+            if cognitive:
+                energy = cognitive.get("energy_level", 0)
+                burnout = cognitive.get("burnout_risk", 0)
+                load = cognitive.get("cognitive_load", 0)
+                message += f"Energy: {energy:.0%} | Cognitive load: {load:.0%} | Burnout risk: {burnout:.0%}\n"
+
+            intervention_msg = self._current_affection.get("intervention", {}).get("message", "")
+            if intervention_msg:
+                message += f"\n{intervention_msg}"
+
+            # Include proactive suggestions if any
+            proactive = self._current_affection.get("proactive_suggestions", [])
+            suggestions = list(self._current_affection.get("intervention", {}).get("suggestions", []))
+            for p in proactive:
+                if p.get("message"):
+                    suggestions.insert(0, p["message"])
+
             return self._response(
                 "completed",
-                message,
+                message.strip(),
                 source=source,
                 intent=intent,
-                suggestions=self._current_affection.get("intervention", {}).get("suggestions", []),
+                suggestions=suggestions,
             )
+
+        # Emotional check-in (full report with schedule context)
+        if intent.name == "emotional_check_in":
+            return self._handle_emotional_check_in(source, intent)
+
+        # Reschedule tasks based on emotional state
+        if intent.name == "reschedule_tasks":
+            return self._handle_reschedule_tasks(intent, source)
+
+        # Lighten load (auto-analyze and suggest)
+        if intent.name == "lighten_load":
+            return self._handle_lighten_load(intent, source)
+
+        # Check schedule
+        if intent.name == "check_schedule":
+            return self._handle_check_schedule(intent, source)
 
         if self._should_pause_for_low_mood(intent.name):
             return self._response(
@@ -275,6 +332,263 @@ class PixelLinkRuntime:
 
         return self._execute_intent(intent, source)
 
+    def _handle_emotional_check_in(self, source: str, intent: Intent) -> dict[str, Any]:
+        """Full emotional check-in with calendar context."""
+        try:
+            import asyncio
+            events, reminders = asyncio.run(
+                self.emotional_intelligence.gather_schedule_data()
+            )
+            affection = self._current_affection or {}
+            # Use AffectionAssessment to reconstruct for analysis
+            from core.nlu.affection_model import AffectionAssessment
+            assessment_obj = AffectionAssessment(
+                mood_percent=affection.get("mood_percent", 55),
+                risk_level=affection.get("risk_level", "low"),
+                should_intervene=affection.get("should_intervene", False),
+                should_pause_automation=affection.get("should_pause_automation", False),
+                variables=affection.get("variables", {}),
+                detected_signals=affection.get("detected_signals", {}),
+                intervention=affection.get("intervention", {}),
+                generated_at=affection.get("generated_at", ""),
+                emotion_vector=affection.get("emotion_vector", {}),
+                cognitive_state=affection.get("cognitive_state", {}),
+                trajectory=affection.get("trajectory", {}),
+                linguistic_analysis=affection.get("linguistic_analysis", {}),
+                schedule_awareness=affection.get("schedule_awareness", {}),
+                composite_emotions=affection.get("composite_emotions", []),
+                dominant_emotion=affection.get("dominant_emotion", ""),
+                dominant_intensity=affection.get("dominant_intensity", 0.0),
+                emotional_summary=affection.get("emotional_summary", ""),
+                proactive_suggestions=affection.get("proactive_suggestions", []),
+            )
+
+            analysis = self.emotional_intelligence.analyze_schedule_with_emotion(
+                assessment_obj, events, reminders
+            )
+
+            message = "--- Emotional Intelligence Report ---\n"
+            message += f"Mood: {affection.get('mood_percent', 0):.1f}% ({affection.get('risk_level', 'unknown')})\n"
+            message += f"Dominant emotion: {affection.get('dominant_emotion', 'unknown')}\n"
+            if affection.get("emotional_summary"):
+                message += f"Summary: {affection['emotional_summary']}\n"
+            message += f"\nEmotional capacity: {analysis.emotional_capacity:.0%}\n"
+            message += f"Schedule pressure: {analysis.schedule_pressure:.0%}\n"
+            message += f"Recommended max tasks: {analysis.recommended_max_tasks}\n"
+
+            if analysis.reschedule_recommendations:
+                message += f"\nI recommend rescheduling {len(analysis.reschedule_recommendations)} task(s):\n"
+                for rec in analysis.reschedule_recommendations:
+                    message += f"  - {rec.task_name}: {rec.reason}\n"
+                    message += f"    Suggested: move to {rec.suggested_date}\n"
+
+            message += f"\n{analysis.summary_message}"
+
+            suggestions = []
+            for rec in analysis.reschedule_recommendations:
+                suggestions.append(rec.action_command)
+            proactive = affection.get("proactive_suggestions", [])
+            for p in proactive:
+                if p.get("message"):
+                    suggestions.append(p["message"])
+
+            return self._response(
+                "completed", message.strip(), source=source, intent=intent, suggestions=suggestions
+            )
+        except Exception as e:
+            return self._response(
+                "completed",
+                f"Emotional check-in (limited): {self._current_affection.get('emotional_summary', 'Unable to generate full report.')}",
+                source=source, intent=intent,
+            )
+
+    def _handle_reschedule_tasks(self, intent: Intent, source: str) -> dict[str, Any]:
+        """Handle task rescheduling based on emotional state."""
+        try:
+            import asyncio
+            events, reminders = asyncio.run(
+                self.emotional_intelligence.gather_schedule_data()
+            )
+            affection = self._current_affection or {}
+            from core.nlu.affection_model import AffectionAssessment
+            assessment_obj = AffectionAssessment(
+                mood_percent=affection.get("mood_percent", 55),
+                risk_level=affection.get("risk_level", "low"),
+                should_intervene=affection.get("should_intervene", False),
+                should_pause_automation=affection.get("should_pause_automation", False),
+                variables=affection.get("variables", {}),
+                detected_signals=affection.get("detected_signals", {}),
+                intervention=affection.get("intervention", {}),
+                generated_at=affection.get("generated_at", ""),
+                emotion_vector=affection.get("emotion_vector", {}),
+                cognitive_state=affection.get("cognitive_state", {}),
+                trajectory=affection.get("trajectory", {}),
+                linguistic_analysis=affection.get("linguistic_analysis", {}),
+                schedule_awareness=affection.get("schedule_awareness", {}),
+                composite_emotions=affection.get("composite_emotions", []),
+                dominant_emotion=affection.get("dominant_emotion", ""),
+                dominant_intensity=affection.get("dominant_intensity", 0.0),
+                emotional_summary=affection.get("emotional_summary", ""),
+                proactive_suggestions=affection.get("proactive_suggestions", []),
+            )
+
+            analysis = self.emotional_intelligence.analyze_schedule_with_emotion(
+                assessment_obj, events, reminders
+            )
+
+            if not analysis.reschedule_recommendations:
+                return self._response(
+                    "completed",
+                    f"Your workload looks manageable (capacity: {analysis.emotional_capacity:.0%}). No tasks need rescheduling right now.",
+                    source=source, intent=intent,
+                )
+
+            message = f"Based on your emotional state ({affection.get('mood_percent', 0):.0f}% mood, {analysis.emotional_capacity:.0%} capacity):\n\n"
+            for i, rec in enumerate(analysis.reschedule_recommendations, 1):
+                message += f"{i}. {rec.task_name}\n"
+                message += f"   Reason: {rec.reason}\n"
+                message += f"   Move to: {rec.suggested_date}\n\n"
+
+            message += "Say 'confirm' to reschedule these tasks, or 'cancel' to keep them as is."
+
+            # Store recommendations as pending
+            self.session.set_pending_clarification({
+                "intent_name": "reschedule_tasks",
+                "clarification_type": "confirm_reschedule",
+                "recommendations": [
+                    {
+                        "task_name": r.task_name,
+                        "task_source": r.task_source,
+                        "suggested_date": r.suggested_date,
+                        "action_command": r.action_command,
+                    }
+                    for r in analysis.reschedule_recommendations
+                ],
+                "prompt": "Confirm or cancel the reschedule?",
+            })
+
+            return self._response(
+                "awaiting_clarification",
+                message.strip(),
+                source=source,
+                intent=intent,
+                pending_clarification=True,
+            )
+        except Exception as e:
+            return self._response(
+                "error",
+                f"Could not analyze schedule for rescheduling: {e}",
+                source=source, intent=intent,
+            )
+
+    def _handle_lighten_load(self, intent: Intent, source: str) -> dict[str, Any]:
+        """Auto-analyze and suggest load reduction."""
+        try:
+            import asyncio
+            events, reminders = asyncio.run(
+                self.emotional_intelligence.gather_schedule_data()
+            )
+            affection = self._current_affection or {}
+            from core.nlu.affection_model import AffectionAssessment
+            assessment_obj = AffectionAssessment(
+                mood_percent=affection.get("mood_percent", 55),
+                risk_level=affection.get("risk_level", "low"),
+                should_intervene=affection.get("should_intervene", False),
+                should_pause_automation=affection.get("should_pause_automation", False),
+                variables=affection.get("variables", {}),
+                detected_signals=affection.get("detected_signals", {}),
+                intervention=affection.get("intervention", {}),
+                generated_at=affection.get("generated_at", ""),
+                emotion_vector=affection.get("emotion_vector", {}),
+                cognitive_state=affection.get("cognitive_state", {}),
+                trajectory=affection.get("trajectory", {}),
+                linguistic_analysis=affection.get("linguistic_analysis", {}),
+                schedule_awareness=affection.get("schedule_awareness", {}),
+                composite_emotions=affection.get("composite_emotions", []),
+                dominant_emotion=affection.get("dominant_emotion", ""),
+                dominant_intensity=affection.get("dominant_intensity", 0.0),
+                emotional_summary=affection.get("emotional_summary", ""),
+                proactive_suggestions=affection.get("proactive_suggestions", []),
+            )
+
+            analysis = self.emotional_intelligence.analyze_schedule_with_emotion(
+                assessment_obj, events, reminders
+            )
+
+            message = analysis.summary_message
+            if analysis.reschedule_recommendations:
+                message += "\n\nSuggested changes:\n"
+                for rec in analysis.reschedule_recommendations:
+                    message += f"  - Move '{rec.task_name}' to {rec.suggested_date} ({rec.reason})\n"
+                message += "\nSay 'confirm' to apply these changes."
+
+                self.session.set_pending_clarification({
+                    "intent_name": "reschedule_tasks",
+                    "clarification_type": "confirm_reschedule",
+                    "recommendations": [
+                        {
+                            "task_name": r.task_name,
+                            "task_source": r.task_source,
+                            "suggested_date": r.suggested_date,
+                            "action_command": r.action_command,
+                        }
+                        for r in analysis.reschedule_recommendations
+                    ],
+                    "prompt": "Confirm or cancel?",
+                })
+
+                return self._response(
+                    "awaiting_clarification",
+                    message.strip(),
+                    source=source,
+                    intent=intent,
+                    pending_clarification=True,
+                )
+
+            return self._response(
+                "completed", message, source=source, intent=intent,
+            )
+        except Exception as e:
+            return self._response("error", f"Could not analyze workload: {e}", source=source, intent=intent)
+
+    def _handle_check_schedule(self, intent: Intent, source: str) -> dict[str, Any]:
+        """Show schedule with emotional context."""
+        try:
+            import asyncio
+            events, reminders = asyncio.run(
+                self.emotional_intelligence.gather_schedule_data()
+            )
+
+            message = "--- Your Schedule ---\n"
+            if events:
+                message += "\nCalendar events:\n"
+                for e in events[:10]:
+                    summary = e.get("summary", "Unknown")
+                    start = e.get("start", "")
+                    message += f"  - {summary} ({start})\n"
+            else:
+                message += "\nNo upcoming calendar events found.\n"
+
+            if reminders:
+                message += f"\nReminders ({len(reminders)}):\n"
+                for r in reminders[:10]:
+                    name = r if isinstance(r, str) else r.get("name", str(r))
+                    message += f"  - {name}\n"
+            else:
+                message += "\nNo reminders found.\n"
+
+            # Add emotional context
+            affection = self._current_affection or {}
+            capacity_info = affection.get("schedule_awareness", {})
+            if capacity_info:
+                message += f"\nSchedule density: {capacity_info.get('schedule_density', 0):.0%}"
+                message += f" | Tasks today: {capacity_info.get('tasks_today', 0)}"
+                message += f" | Free slots: {capacity_info.get('free_slots_today', 0)}"
+
+            return self._response("completed", message.strip(), source=source, intent=intent)
+        except Exception as e:
+            return self._response("error", f"Could not fetch schedule: {e}", source=source, intent=intent)
+
     def _execute_intent(self, intent: Intent, source: str) -> dict[str, Any]:
         steps = self.planner.plan(intent, self.session, self.guard)
         safety = self.guard.validate_plan(steps)
@@ -357,6 +671,16 @@ class PixelLinkRuntime:
             self.session.record_intent(resolved_intent.name, resolved_intent.raw_text)
             return self._execute_intent(resolved_intent, source)
 
+        if intent_name == "reschedule_tasks" and clarification_type == "confirm_reschedule":
+            # User confirmed rescheduling
+            if user_reply.lower() in {"yes", "y", "confirm", "ok", "okay", "sure", "proceed", "go ahead", "do it"}:
+                self.session.clear_pending_clarification()
+                recommendations = pending.get("recommendations", [])
+                return self._execute_reschedule(recommendations, source)
+            else:
+                self.session.clear_pending_clarification()
+                return self._response("canceled", "Reschedule canceled. Your tasks remain as is.", source=source)
+
         self.session.clear_pending_clarification()
         return self._response("error", "Unable to resolve clarification context.", source=source)
 
@@ -396,6 +720,43 @@ class PixelLinkRuntime:
             return {"message": "Task completed"}
         except Exception as e:
             return {"error": f"MCP execution failed: {str(e)}"}
+
+    def _execute_reschedule(self, recommendations: list[dict], source: str) -> dict[str, Any]:
+        """Execute the rescheduling of tasks based on recommendations."""
+        results = []
+        for rec in recommendations:
+            task_name = rec.get("task_name", "")
+            task_source = rec.get("task_source", "reminder")
+            suggested_date = rec.get("suggested_date", "")
+
+            if task_source == "reminder" and suggested_date:
+                # Create a new reminder with the due date
+                tool = self.mcp_tools.get("reminders_create_reminder")
+                if tool:
+                    try:
+                        import asyncio
+                        asyncio.run(tool(
+                            list_name="Reminders",
+                            name=f"{task_name} (rescheduled)",
+                            body=f"Moved from today due to emotional wellbeing. Original: {task_name}",
+                            due_date_iso=f"{suggested_date}T09:00:00",
+                        ))
+                        results.append(f"Moved '{task_name}' to {suggested_date}")
+                    except Exception as e:
+                        results.append(f"Failed to move '{task_name}': {e}")
+                else:
+                    results.append(f"Would move '{task_name}' to {suggested_date} (reminder tool unavailable)")
+            elif task_source == "calendar":
+                results.append(f"Calendar event '{task_name}' flagged for rescheduling to {suggested_date} (manual action needed)")
+            else:
+                results.append(f"'{task_name}' noted for rescheduling to {suggested_date}")
+
+        self.emotional_intelligence.invalidate_cache()
+
+        message = "Rescheduling complete:\n" + "\n".join(f"  - {r}" for r in results)
+        message += "\n\nTake care of yourself. I've lightened your load."
+
+        return self._response("completed", message, source=source)
 
     def _record_last_app(self, steps: list[Any]) -> None:
         for step in steps:
@@ -458,6 +819,11 @@ class PixelLinkRuntime:
             "suggestions": final_suggestions,
             "affection": active_affection,
             "affection_notice": affection_notice,
+            "emotion_vector": active_affection.get("emotion_vector", {}),
+            "dominant_emotion": active_affection.get("dominant_emotion", ""),
+            "emotional_summary": active_affection.get("emotional_summary", ""),
+            "cognitive_state": active_affection.get("cognitive_state", {}),
+            "proactive_suggestions": active_affection.get("proactive_suggestions", []),
         }
 
 
