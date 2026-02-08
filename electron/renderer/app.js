@@ -1,16 +1,26 @@
 const PREFERENCES_KEY = "pixelink.ui.preferences.v1";
+const BLIND_ONBOARD_KEY = "pixelink.ui.blindmode.onboarded.v1";
 
 const state = {
   runtime: null,
   logs: [],
   voiceListening: false,
+  continuousVoiceEnabled: true,
+  continuousVoiceLoopRunning: false,
+  continuousVoiceAnnounced: false,
   voiceModel: null,
   lastModelErrorSignature: "",
   preferences: {
+    blindModeEnabled: false,
+    narrationLevel: "concise",
+    screenReaderHintsEnabled: true,
     reducedLoad: false,
     minimalUi: false,
     visualOnly: false
-  }
+  },
+  lastAnnouncedStatus: "",
+  hasInitialPreferenceSync: false,
+  lastRuntimeAnnouncement: ""
 };
 
 const elements = {
@@ -20,7 +30,9 @@ const elements = {
   logArea: document.getElementById("logArea"),
   commandForm: document.getElementById("commandForm"),
   commandInput: document.getElementById("commandInput"),
+  sendBtn: document.getElementById("sendBtn"),
   voiceBtn: document.getElementById("voiceBtn"),
+  blindModeToggle: document.getElementById("blindModeToggle"),
   reducedLoadToggle: document.getElementById("reducedLoadToggle"),
   minimalUiToggle: document.getElementById("minimalUiToggle"),
   visualOnlyToggle: document.getElementById("visualOnlyToggle"),
@@ -33,7 +45,9 @@ const elements = {
   eyePreviewPanel: document.getElementById("eyePreviewPanel"),
   eyePreviewVideo: document.getElementById("eyePreviewVideo"),
   eyePreviewStats: document.getElementById("eyePreviewStats"),
-  eyePreviewState: document.getElementById("eyePreviewState")
+  eyePreviewState: document.getElementById("eyePreviewState"),
+  livePolite: document.getElementById("livePolite"),
+  liveAssertive: document.getElementById("liveAssertive")
 };
 
 function loadPreferences() {
@@ -56,10 +70,63 @@ function savePreferences() {
   localStorage.setItem(PREFERENCES_KEY, JSON.stringify(state.preferences));
 }
 
+function announce(message, priority = "polite") {
+  const text = String(message || "").trim();
+  if (!text) {
+    return;
+  }
+  const isAssertive = String(priority).toLowerCase() === "assertive";
+  const target = isAssertive ? elements.liveAssertive : elements.livePolite;
+  if (!target) {
+    return;
+  }
+  target.textContent = "";
+  window.setTimeout(() => {
+    target.textContent = text;
+  }, 20);
+}
+
+function shouldCaptureShortcutTarget() {
+  const active = document.activeElement;
+  if (!active) {
+    return true;
+  }
+  if (active === elements.commandInput) {
+    return false;
+  }
+  const tag = String(active.tagName || "").toUpperCase();
+  if (tag === "INPUT" || tag === "TEXTAREA") {
+    return false;
+  }
+  return !active.isContentEditable;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function maybeShowBlindModeOnboarding() {
+  if (!state.preferences.blindModeEnabled) {
+    return;
+  }
+  if (localStorage.getItem(BLIND_ONBOARD_KEY) === "1") {
+    return;
+  }
+  const message = "Blind mode is on. Press V for voice, S for status, and R to repeat the last response.";
+  localStorage.setItem(BLIND_ONBOARD_KEY, "1");
+  appendLog("info", "Blind Mode", message);
+  announce(message, "assertive");
+}
+
 function applyPreferencesUi() {
+  if (state.preferences.blindModeEnabled && state.preferences.visualOnly) {
+    state.preferences.visualOnly = false;
+  }
+  elements.blindModeToggle.checked = Boolean(state.preferences.blindModeEnabled);
   elements.reducedLoadToggle.checked = Boolean(state.preferences.reducedLoad);
   elements.minimalUiToggle.checked = Boolean(state.preferences.minimalUi);
   elements.visualOnlyToggle.checked = Boolean(state.preferences.visualOnly);
+  elements.visualOnlyToggle.disabled = Boolean(state.preferences.blindModeEnabled);
   elements.consoleRoot.classList.toggle("reduced-load", Boolean(state.preferences.reducedLoad));
   elements.consoleRoot.classList.toggle("minimal-ui", Boolean(state.preferences.minimalUi));
   renderLogs();
@@ -101,41 +168,44 @@ function setStatus(runtime) {
   const waitingConfirm = Boolean(runtime?.pendingConfirmation);
   const waitingClarification = Boolean(runtime?.pendingClarification);
   const pipelineState = runtime?.pipelineState || "idle";
+  let statusMessage = "Offline";
 
   if (!backendOnline) {
     elements.statusDot.className = "status-dot status-offline";
     elements.statusText.textContent = "Offline";
-    return;
+  } else {
+    // Show pipeline state when not idle
+    const pipelineLabels = {
+      listen: "Listening...",
+      processing: "Processing...",
+      action: "Executing...",
+      output: "Speaking...",
+    };
+
+    if (pipelineState !== "idle" && pipelineLabels[pipelineState]) {
+      elements.statusDot.className = "status-dot status-busy";
+      statusMessage = pipelineLabels[pipelineState];
+      elements.statusText.textContent = statusMessage;
+    } else if (waitingClarification) {
+      elements.statusDot.className = "status-dot status-warn";
+      statusMessage = state.preferences.reducedLoad ? "Need Input" : "Needs Clarification";
+      elements.statusText.textContent = statusMessage;
+    } else if (waitingConfirm) {
+      elements.statusDot.className = "status-dot status-warn";
+      statusMessage = state.preferences.reducedLoad ? "Need Confirm" : "Awaiting Confirmation";
+      elements.statusText.textContent = statusMessage;
+    } else {
+      elements.statusDot.className = "status-dot status-online";
+      statusMessage = "Online";
+      elements.statusText.textContent = statusMessage;
+    }
   }
 
-  // Show pipeline state when not idle
-  const pipelineLabels = {
-    listen: "Listening...",
-    processing: "Processing...",
-    action: "Executing...",
-    output: "Speaking...",
-  };
-
-  if (pipelineState !== "idle" && pipelineLabels[pipelineState]) {
-    elements.statusDot.className = "status-dot status-busy";
-    elements.statusText.textContent = pipelineLabels[pipelineState];
-    return;
+  const shouldAnnounce = state.preferences.blindModeEnabled || state.preferences.screenReaderHintsEnabled;
+  if (shouldAnnounce && statusMessage !== state.lastAnnouncedStatus) {
+    state.lastAnnouncedStatus = statusMessage;
+    announce(`Status: ${statusMessage}`, "polite");
   }
-
-  if (waitingClarification) {
-    elements.statusDot.className = "status-dot status-warn";
-    elements.statusText.textContent = state.preferences.reducedLoad ? "Need Input" : "Needs Clarification";
-    return;
-  }
-
-  if (waitingConfirm) {
-    elements.statusDot.className = "status-dot status-warn";
-    elements.statusText.textContent = state.preferences.reducedLoad ? "Need Confirm" : "Awaiting Confirmation";
-    return;
-  }
-
-  elements.statusDot.className = "status-dot status-online";
-  elements.statusText.textContent = "Online";
 }
 
 function updateVoiceModelStatus(model) {
@@ -163,8 +233,54 @@ function updateVoiceModelStatus(model) {
   }
 }
 
+function applyAccessibilityFromRuntime(runtime) {
+  const accessibility = runtime?.accessibility;
+  if (!accessibility || typeof accessibility !== "object") {
+    return;
+  }
+  const runtimeBlind = Boolean(accessibility.blindModeEnabled ?? accessibility.blind_mode_enabled);
+  const runtimeNarration = String((accessibility.narrationLevel ?? accessibility.narration_level ?? "concise")) === "verbose"
+    ? "verbose"
+    : "concise";
+  const runtimeHints = Boolean(
+    accessibility.screenReaderHintsEnabled
+    ?? accessibility.screen_reader_hints_enabled
+    ?? state.preferences.screenReaderHintsEnabled
+  );
+
+  if (state.hasInitialPreferenceSync) {
+    let changed = false;
+    if (state.preferences.blindModeEnabled !== runtimeBlind) {
+      state.preferences.blindModeEnabled = runtimeBlind;
+      changed = true;
+    }
+    if (state.preferences.narrationLevel !== runtimeNarration) {
+      state.preferences.narrationLevel = runtimeNarration;
+      changed = true;
+    }
+    if (state.preferences.screenReaderHintsEnabled !== runtimeHints) {
+      state.preferences.screenReaderHintsEnabled = runtimeHints;
+      changed = true;
+    }
+    if (changed) {
+      savePreferences();
+      applyPreferencesUi();
+      if (runtimeBlind) {
+        maybeShowBlindModeOnboarding();
+      }
+    }
+  }
+
+  const message = String((accessibility.lastAnnouncement ?? accessibility.last_announcement ?? "")).trim();
+  if (message && message !== state.lastRuntimeAnnouncement) {
+    state.lastRuntimeAnnouncement = message;
+    announce(message, "polite");
+  }
+}
+
 function updateRuntime(runtime) {
   state.runtime = runtime;
+  applyAccessibilityFromRuntime(runtime);
   setStatus(runtime);
   updateVoiceModelStatus(runtime?.voice?.model);
   updateVoiceButtonState();
@@ -252,11 +368,71 @@ function isPipelineBusy() {
   return ps === "action" || ps === "output" || ps === "processing";
 }
 
+function isVoiceModelLoading() {
+  const modelState = String(state.runtime?.voice?.model?.state || "").toLowerCase();
+  const modelStage = String(state.runtime?.voice?.model?.stage || "").toLowerCase();
+  return ["loading", "idle"].includes(modelState) && modelStage !== "ready";
+}
+
+function isExpectedContinuousVoiceResult(result) {
+  const code = String(result?.error?.code || "").toUpperCase();
+  if (!code) {
+    return false;
+  }
+  return ["VOICE_INPUT_EMPTY", "VOICE_INPUT_FAILED", "INPUT_BLOCKED"].includes(code);
+}
+
+function canCaptureContinuousVoice() {
+  if (!state.continuousVoiceEnabled || state.voiceListening) {
+    return false;
+  }
+  const backendOnline = state.runtime?.backend === "online";
+  const voiceInputEnabled = Boolean(state.runtime?.voice?.inputEnabled);
+  if (!backendOnline || !voiceInputEnabled) {
+    return false;
+  }
+  if (isPipelineBusy() || isVoiceModelLoading()) {
+    return false;
+  }
+  return true;
+}
+
+async function runContinuousVoiceLoop() {
+  if (state.continuousVoiceLoopRunning) {
+    return;
+  }
+  state.continuousVoiceLoopRunning = true;
+  if (!state.continuousVoiceAnnounced) {
+    state.continuousVoiceAnnounced = true;
+    appendLog("info", "Voice", "24/7 listening enabled. Voice is now primary input.");
+    announce("24/7 listening enabled. Voice is primary input.", "polite");
+  }
+
+  while (state.continuousVoiceEnabled) {
+    if (!canCaptureContinuousVoice()) {
+      await delay(750);
+      continue;
+    }
+    const result = await submitVoiceCommand({ continuous: true, quietStart: true });
+    if (result && !isExpectedContinuousVoiceResult(result)) {
+      await delay(140);
+    } else {
+      await delay(250);
+    }
+  }
+  state.continuousVoiceLoopRunning = false;
+}
+
+function ensureContinuousVoiceLoop() {
+  if (state.continuousVoiceEnabled && !state.continuousVoiceLoopRunning) {
+    void runContinuousVoiceLoop();
+  }
+}
+
 function updateVoiceButtonState() {
   const backendOnline = state.runtime?.backend === "online";
   const voiceInputEnabled = Boolean(state.runtime?.voice?.inputEnabled);
-  const modelLoading = ["loading", "idle"].includes(String(state.runtime?.voice?.model?.state || "").toLowerCase())
-    && String(state.runtime?.voice?.model?.stage || "").toLowerCase() !== "ready";
+  const modelLoading = isVoiceModelLoading();
   const busy = isPipelineBusy();
   const enabled = backendOnline && voiceInputEnabled && !state.voiceListening && !modelLoading && !busy;
 
@@ -266,7 +442,9 @@ function updateVoiceButtonState() {
   // Also disable command input when pipeline is busy
   if (elements.commandInput) {
     elements.commandInput.disabled = busy;
-    elements.commandInput.placeholder = busy ? "Please wait..." : "Type a command...";
+    elements.commandInput.placeholder = busy
+      ? "Please wait..."
+      : "Voice-first mode active. You can still type if needed.";
   }
 
   if (busy) {
@@ -343,6 +521,21 @@ function logResult(result) {
   const title = result?.status || "Result";
   const message = result?.status === "error" ? formatStructuredError(result) : (result?.message || "");
   appendLog(level, title, message);
+  if (state.preferences.blindModeEnabled || state.preferences.screenReaderHintsEnabled) {
+    announce(message || title, "polite");
+  }
+
+  const intentName = result?.intent?.name;
+  if (intentName === "set_blind_mode") {
+    const enabled = Boolean(result?.intent?.entities?.enabled);
+    state.preferences.blindModeEnabled = enabled;
+    if (enabled) {
+      state.preferences.visualOnly = false;
+      maybeShowBlindModeOnboarding();
+    }
+    savePreferences();
+    applyPreferencesUi();
+  }
 
   if (result?.transcript) {
     appendLog("info", "Heard", result.transcript);
@@ -370,60 +563,98 @@ async function submitCommand(command) {
   }
 }
 
-async function submitVoiceCommand() {
+async function submitVoiceCommand(options = {}) {
+  const continuous = Boolean(options.continuous);
+  const quietStart = Boolean(options.quietStart);
   if (state.voiceListening) {
-    return;
+    return null;
   }
 
   state.voiceListening = true;
   updateVoiceButtonState();
-  appendLog("info", "Voice", "Listening for command...");
+  if (!quietStart) {
+    appendLog("info", "Voice", "Listening for command...");
+  }
 
   try {
     const result = await window.pixelink.captureVoiceInput();
-    logResult(result);
+    if (!(continuous && isExpectedContinuousVoiceResult(result))) {
+      logResult(result);
+    }
+    return result;
   } catch (error) {
-    appendLog("error", "Voice Error", String(error.message || error));
+    if (!continuous) {
+      appendLog("error", "Voice Error", String(error.message || error));
+    }
+    return null;
   } finally {
     state.voiceListening = false;
     updateVoiceButtonState();
   }
 }
 
-async function syncVoicePreferences() {
+async function syncAccessibilityPreferences() {
   if (!state.runtime || state.runtime.backend !== "online") {
     return;
   }
   try {
+    const shouldForceVoice = Boolean(state.preferences.blindModeEnabled);
+    const voiceOutputEnabled = shouldForceVoice ? true : !state.preferences.visualOnly;
+    const voiceInputEnabled = shouldForceVoice ? true : undefined;
     const response = await window.pixelink.updatePreferences({
-      voiceOutputEnabled: !state.preferences.visualOnly
+      voiceOutputEnabled,
+      voiceInputEnabled,
+      blindModeEnabled: Boolean(state.preferences.blindModeEnabled),
+      narrationLevel: state.preferences.narrationLevel,
+      screenReaderHintsEnabled: Boolean(state.preferences.screenReaderHintsEnabled)
     });
     if (response?.voice) {
       updateRuntime({
         ...state.runtime,
-        voice: response.voice
+        voice: response.voice,
+        accessibility: response.accessibility || state.runtime?.accessibility
       });
     }
   } catch (error) {
-    appendLog("error", "Settings", `Failed to apply visual-only feedback: ${String(error.message || error)}`);
+    appendLog("error", "Settings", `Failed to apply accessibility preferences: ${String(error.message || error)}`);
   }
 }
 
 function bindEvents() {
   document.addEventListener("keydown", async (event) => {
-    if (event.key !== "Escape") {
+    if (event.key === "Escape") {
+      const eyeActive = Boolean(state.runtime?.eyeControl?.active);
+      if (!eyeActive) {
+        return;
+      }
+      event.preventDefault();
+      try {
+        await window.pixelink.stopEyeControl();
+        appendLog("info", "Eye Control", "Eye control turned off (Esc).");
+      } catch (error) {
+        appendLog("error", "Eye Control", `Esc stop failed: ${String(error.message || error)}`);
+      }
       return;
     }
-    const eyeActive = Boolean(state.runtime?.eyeControl?.active);
-    if (!eyeActive) {
+
+    if (event.metaKey || event.ctrlKey || event.altKey || !shouldCaptureShortcutTarget()) {
       return;
     }
-    event.preventDefault();
-    try {
-      await window.pixelink.stopEyeControl();
-      appendLog("info", "Eye Control", "Eye control turned off (Esc).");
-    } catch (error) {
-      appendLog("error", "Eye Control", `Esc stop failed: ${String(error.message || error)}`);
+
+    const key = String(event.key || "").toLowerCase();
+    if (key === "v") {
+      event.preventDefault();
+      await submitVoiceCommand({ continuous: false, quietStart: false });
+      return;
+    }
+    if (key === "r") {
+      event.preventDefault();
+      await submitCommand("repeat last response");
+      return;
+    }
+    if (key === "s") {
+      event.preventDefault();
+      await submitCommand("read status");
     }
   });
 
@@ -433,7 +664,7 @@ function bindEvents() {
   });
 
   elements.voiceBtn.addEventListener("click", async () => {
-    await submitVoiceCommand();
+    await submitVoiceCommand({ continuous: false, quietStart: false });
   });
 
   elements.eyeControlBtn.addEventListener("click", async () => {
@@ -462,6 +693,22 @@ function bindEvents() {
     applyPreferencesUi();
   });
 
+  elements.blindModeToggle.addEventListener("change", async () => {
+    state.preferences.blindModeEnabled = elements.blindModeToggle.checked;
+    if (state.preferences.blindModeEnabled) {
+      state.preferences.visualOnly = false;
+    }
+    savePreferences();
+    applyPreferencesUi();
+    await syncAccessibilityPreferences();
+    appendLog("info", "Settings", state.preferences.blindModeEnabled
+      ? "Blind mode enabled. Voice output and input are forced on."
+      : "Blind mode disabled.");
+    if (state.preferences.blindModeEnabled) {
+      maybeShowBlindModeOnboarding();
+    }
+  });
+
   elements.minimalUiToggle.addEventListener("change", () => {
     state.preferences.minimalUi = elements.minimalUiToggle.checked;
     savePreferences();
@@ -469,10 +716,14 @@ function bindEvents() {
   });
 
   elements.visualOnlyToggle.addEventListener("change", async () => {
+    if (state.preferences.blindModeEnabled) {
+      elements.visualOnlyToggle.checked = false;
+      return;
+    }
     state.preferences.visualOnly = elements.visualOnlyToggle.checked;
     savePreferences();
     applyPreferencesUi();
-    await syncVoicePreferences();
+    await syncAccessibilityPreferences();
     appendLog("info", "Settings", state.preferences.visualOnly
       ? "Visual-only feedback enabled. Voice output is muted."
       : "Voice output re-enabled.");
@@ -488,8 +739,10 @@ async function boot() {
   updateRuntime(snapshot.runtime);
   appendLog("info", "PixelLink", "Console ready.");
 
-  if (state.preferences.visualOnly) {
-    await syncVoicePreferences();
+  await syncAccessibilityPreferences();
+  state.hasInitialPreferenceSync = true;
+  if (state.preferences.blindModeEnabled) {
+    maybeShowBlindModeOnboarding();
   }
 
   if (!snapshot.runtime?.voice?.outputEnabled && !state.preferences.visualOnly) {
@@ -502,12 +755,25 @@ async function boot() {
 
   window.pixelink.onRuntimeUpdate((runtime) => {
     updateRuntime(runtime);
+    ensureContinuousVoiceLoop();
   });
 
   if (typeof window.pixelink.onVoiceModelStatus === "function") {
     window.pixelink.onVoiceModelStatus((model) => {
       updateVoiceModelStatus(model);
       updateVoiceButtonState();
+    });
+  }
+
+  if (typeof window.pixelink.onAnnouncement === "function") {
+    window.pixelink.onAnnouncement((payload) => {
+      const message = String(payload?.message || "").trim();
+      if (!message) {
+        return;
+      }
+      const priority = String(payload?.priority || "polite");
+      announce(message, priority);
+      appendLog("info", "Announcement", message);
     });
   }
 
@@ -526,6 +792,8 @@ async function boot() {
   window.pixelink.onBridgeLog((payload) => {
     appendLog("info", "Bridge Log", payload.line || "");
   });
+
+  ensureContinuousVoiceLoop();
 }
 
 boot().catch((error) => {

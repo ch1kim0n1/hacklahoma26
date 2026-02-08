@@ -7,17 +7,21 @@
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
-  <main class="console">
+  <main class="console" role="main" aria-label="PixelLink console">
     <header class="console-header">
       <h1>PixelLink</h1>
-      <div class="status-wrap">
+      <div class="status-wrap" role="status" aria-live="polite" aria-atomic="true">
         <span id="statusDot" class="status-dot status-offline"></span>
         <span id="statusText">Offline</span>
       </div>
-      <button id="hideBtn" class="hide-btn" type="button">Hide</button>
+      <button id="hideBtn" class="hide-btn" type="button" aria-label="Hide PixelLink window">Hide</button>
     </header>
 
-    <section class="preferences" id="preferencesPanel">
+    <section class="preferences" id="preferencesPanel" aria-label="Preferences">
+      <label class="pref-item">
+        <input id="blindModeToggle" type="checkbox" />
+        <span>Blind Mode</span>
+      </label>
       <label class="pref-item">
         <input id="reducedLoadToggle" type="checkbox" />
         <span>Reduced Load</span>
@@ -42,16 +46,16 @@
       </div>
     </section>
 
-    <section class="log-area" id="logArea"></section>
+    <section class="log-area" id="logArea" role="log" aria-live="polite" aria-relevant="additions"></section>
 
-    <form id="commandForm" class="command-form">
-      <input id="commandInput" type="text" placeholder="Type a command..." autocomplete="off" />
-      <button id="voiceBtn" class="voice-btn" type="button">Voice</button>
-      <button id="eyeControlBtn" class="eye-control-btn" type="button" title="Eye and blink control">Eye</button>
-      <button type="submit">Send</button>
+    <form id="commandForm" class="command-form" aria-label="Command input">
+      <input id="commandInput" type="text" placeholder="Type a command..." autocomplete="off" aria-label="Command input" />
+      <button id="voiceBtn" class="voice-btn" type="button" aria-label="Start voice command capture">Voice</button>
+      <button id="eyeControlBtn" class="eye-control-btn" type="button" title="Eye and blink control" aria-label="Toggle eye and blink control">Eye</button>
+      <button id="sendBtn" type="submit" aria-label="Send command">Send</button>
     </form>
   </main>
-  <aside id="eyePreviewPanel" class="eye-preview hidden" aria-live="polite">
+  <aside id="eyePreviewPanel" class="eye-preview hidden" aria-live="polite" aria-label="Eye sensor preview">
     <header class="eye-preview-header">
       <strong>Eye Sensor</strong>
       <span id="eyePreviewState">idle</span>
@@ -59,6 +63,8 @@
     <video id="eyePreviewVideo" autoplay muted playsinline></video>
     <div id="eyePreviewStats" class="eye-preview-stats">Waiting for eye control...</div>
   </aside>
+  <div id="livePolite" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+  <div id="liveAssertive" class="sr-only" aria-live="assertive" aria-atomic="true"></div>
 
   <script src="./app.js"></script>
 </body>

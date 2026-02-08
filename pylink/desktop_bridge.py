@@ -82,7 +82,51 @@ def _runtime_state(runtime: PixelLinkRuntime) -> dict[str, Any]:
         "clarification_prompt": (runtime.session.pending_clarification or {}).get("prompt", ""),
         "last_app": runtime.session.last_app,
         "history_count": len(runtime.session.history),
+        "last_response_message": runtime.session.last_response_message,
+        "last_status_message": runtime.session.last_status_message,
     }
+
+
+def _normalize_narration_level(value: Any) -> str:
+    return "verbose" if str(value or "").lower() == "verbose" else "concise"
+
+
+def _accessibility_state(
+    *,
+    blind_mode_enabled: bool,
+    narration_level: str,
+    screen_reader_hints_enabled: bool,
+    last_announcement: str,
+) -> dict[str, Any]:
+    return {
+        "blind_mode_enabled": bool(blind_mode_enabled),
+        "narration_level": _normalize_narration_level(narration_level),
+        "screen_reader_hints_enabled": bool(screen_reader_hints_enabled),
+        "last_announcement": last_announcement or "",
+    }
+
+
+def _announcement_payload(message: str, priority: str = "polite") -> dict[str, Any]:
+    return {
+        "status": "announcement",
+        "priority": "assertive" if str(priority).lower() == "assertive" else "polite",
+        "message": message,
+    }
+
+
+def _blind_mode_guidance(voice_output_enabled: bool, voice_input_enabled: bool) -> str:
+    issues: list[str] = []
+    if not voice_output_enabled:
+        issues.append("text-to-speech is unavailable")
+    if not voice_input_enabled:
+        issues.append("speech-to-text is unavailable")
+    if not issues:
+        return ""
+    return (
+        "Blind mode is enabled, but "
+        + " and ".join(issues)
+        + ". Check your API keys, microphone permission, and voice dependencies."
+    )
 
 
 def _build_error(
@@ -218,6 +262,10 @@ def main() -> int:
     enable_kill_switch = _as_bool(os.getenv("PIXELINK_ENABLE_KILL_SWITCH"), default=False)
     requested_voice_output = _as_bool(os.getenv("PIXELINK_VOICE_OUTPUT"), default=True)
     requested_voice_input = _as_bool(os.getenv("PIXELINK_VOICE_INPUT"), default=True)
+    blind_mode_enabled = _as_bool(os.getenv("PIXELINK_BLIND_MODE"), default=False)
+    narration_level = _normalize_narration_level(os.getenv("PIXELINK_NARRATION_LEVEL", "concise"))
+    screen_reader_hints_enabled = _as_bool(os.getenv("PIXELINK_SCREEN_READER_HINTS"), default=True)
+    last_announcement = ""
 
     calendar_credentials = os.getenv("PIXELINK_CALENDAR_CREDENTIALS_PATH")
     calendar_token = os.getenv("PIXELINK_CALENDAR_TOKEN_PATH")
@@ -251,6 +299,11 @@ def main() -> int:
         enable_kill_switch=enable_kill_switch,
         verbose=False,
         mcp_tools=tool_map,
+    )
+    runtime.set_preferences(
+        blind_mode_enabled=blind_mode_enabled,
+        narration_level=narration_level,
+        screen_reader_hints_enabled=screen_reader_hints_enabled,
     )
 
     voice_controller = None
@@ -312,10 +365,40 @@ def main() -> int:
             "model": _get_voice_model_state(),
         }
 
+    def _current_accessibility_state() -> dict[str, Any]:
+        return _accessibility_state(
+            blind_mode_enabled=blind_mode_enabled,
+            narration_level=narration_level,
+            screen_reader_hints_enabled=screen_reader_hints_enabled,
+            last_announcement=last_announcement,
+        )
+
+    def _emit_announcement(message: str, priority: str = "polite") -> None:
+        nonlocal last_announcement
+        clean_message = str(message or "").strip()
+        if not clean_message:
+            return
+        last_announcement = clean_message
+        payload = _announcement_payload(clean_message, priority)
+        payload["accessibility"] = _current_accessibility_state()
+        _write_json(payload)
+
+    def _apply_blind_mode_voice_requirements() -> None:
+        nonlocal requested_voice_output, requested_voice_input, voice_output_enabled, voice_input_enabled
+        requested_voice_output = True
+        requested_voice_input = True
+        voice_output_enabled = bool(voice_controller and voice_controller.tts_available)
+        voice_input_enabled = bool(voice_controller and voice_controller.stt_available)
+        if voice_controller and voice_input_enabled:
+            voice_controller.warm_stt_async(status_callback=_emit_voice_model_status)
+
+    def _blind_mode_availability_guidance() -> str:
+        return _blind_mode_guidance(voice_output_enabled, voice_input_enabled)
+
     # Register pre-task announcement callback so voice speaks BEFORE execution
     def _pre_task_announce(msg: str) -> None:
         """Speak pre-task announcement and emit status to Electron."""
-        _write_json({"status": "pre_task_announcement", "message": msg})
+        _emit_announcement(msg, priority="polite")
         if voice_controller and voice_output_enabled:
             try:
                 voice_controller.speak(msg, blocking=True)
@@ -323,6 +406,12 @@ def main() -> int:
                 pass
 
     runtime.set_pre_task_callback(_pre_task_announce)
+
+    if blind_mode_enabled:
+        _apply_blind_mode_voice_requirements()
+        guidance = _blind_mode_availability_guidance()
+        if guidance:
+            _emit_announcement(guidance, priority="assertive")
 
     def _speak_pre_task(result: dict[str, Any]) -> None:
         """Speak the pre-task announcement before executing.
@@ -367,6 +456,33 @@ def main() -> int:
             result.setdefault("warnings", []).append("VOICE_OUTPUT_FAILED")
             result.setdefault("warning_details", []).append(str(exc))
 
+    def _apply_accessibility_side_effects(result: dict[str, Any]) -> None:
+        nonlocal blind_mode_enabled, narration_level, screen_reader_hints_enabled
+        intent_payload = result.get("intent") if isinstance(result.get("intent"), dict) else {}
+        if intent_payload.get("name") == "set_blind_mode":
+            entities = intent_payload.get("entities") if isinstance(intent_payload.get("entities"), dict) else {}
+            enabled = bool(entities.get("enabled"))
+            blind_mode_enabled = enabled
+            runtime.set_preferences(blind_mode_enabled=enabled)
+            if enabled:
+                _apply_blind_mode_voice_requirements()
+                _emit_announcement("Blind mode enabled. Voice guidance is active.", priority="assertive")
+                guidance = _blind_mode_availability_guidance()
+                if guidance:
+                    result.setdefault("warnings", []).append("BLIND_MODE_VOICE_UNAVAILABLE")
+                    result.setdefault("warning_details", []).append(guidance)
+                    _emit_announcement(guidance, priority="assertive")
+            else:
+                _emit_announcement("Blind mode disabled.", priority="polite")
+
+        if isinstance(result.get("accessibility"), dict):
+            runtime_acc = result["accessibility"]
+            blind_mode_enabled = bool(runtime_acc.get("blind_mode_enabled", blind_mode_enabled))
+            narration_level = _normalize_narration_level(runtime_acc.get("narration_level", narration_level))
+            screen_reader_hints_enabled = bool(
+                runtime_acc.get("screen_reader_hints_enabled", screen_reader_hints_enabled)
+            )
+
     running = True
 
     def shutdown_handler(*_) -> None:
@@ -383,6 +499,7 @@ def main() -> int:
             "dry_run": dry_run,
             "speed": speed,
             "voice": _voice_state(),
+            "accessibility": _current_accessibility_state(),
         }
     )
 
@@ -428,7 +545,12 @@ def main() -> int:
                             message="System is busy. Please wait until the current task finishes.",
                             code="INPUT_BLOCKED",
                             request_id=request_id,
-                            extra={**_runtime_state(runtime), "voice": _voice_state(), "pipeline_state": _get_pipeline_state()},
+                            extra={
+                                **_runtime_state(runtime),
+                                "voice": _voice_state(),
+                                "pipeline_state": _get_pipeline_state(),
+                                "accessibility": _current_accessibility_state(),
+                            },
                         )
                     )
                     continue
@@ -448,8 +570,10 @@ def main() -> int:
                     # Output phase - speak the response
                     _set_pipeline_state("output")
                     _speak_response(result)
+                    _apply_accessibility_side_effects(result)
 
                     result["voice"] = _voice_state()
+                    result["accessibility"] = _current_accessibility_state()
                     result["pipeline_state"] = "idle"
                     if request_id is not None:
                         result["request_id"] = request_id
@@ -461,7 +585,11 @@ def main() -> int:
                             code="PROCESS_INPUT_FAILED",
                             request_id=request_id,
                             error=exc,
-                            extra={**_runtime_state(runtime), "voice": _voice_state()},
+                            extra={
+                                **_runtime_state(runtime),
+                                "voice": _voice_state(),
+                                "accessibility": _current_accessibility_state(),
+                            },
                         )
                     )
                 finally:
@@ -476,7 +604,12 @@ def main() -> int:
                             message="System is busy. Please wait until the current task finishes.",
                             code="INPUT_BLOCKED",
                             request_id=request_id,
-                            extra={**_runtime_state(runtime), "voice": _voice_state(), "pipeline_state": _get_pipeline_state()},
+                            extra={
+                                **_runtime_state(runtime),
+                                "voice": _voice_state(),
+                                "pipeline_state": _get_pipeline_state(),
+                                "accessibility": _current_accessibility_state(),
+                            },
                         )
                     )
                     continue
@@ -486,7 +619,11 @@ def main() -> int:
                         _build_voice_error(
                             code="VOICE_INPUT_UNAVAILABLE",
                             request_id=request_id,
-                            extra={**_runtime_state(runtime), "voice": _voice_state()},
+                            extra={
+                                **_runtime_state(runtime),
+                                "voice": _voice_state(),
+                                "accessibility": _current_accessibility_state(),
+                            },
                         )
                     )
                     continue
@@ -509,7 +646,11 @@ def main() -> int:
                             request_id=request_id,
                             error=exc,
                             details=str(exc),
-                            extra={**_runtime_state(runtime), "voice": _voice_state()},
+                            extra={
+                                **_runtime_state(runtime),
+                                "voice": _voice_state(),
+                                "accessibility": _current_accessibility_state(),
+                            },
                         )
                     )
                     continue
@@ -528,6 +669,7 @@ def main() -> int:
                                     "voice": _voice_state(),
                                     "source": "voice",
                                     "transcript": "",
+                                    "accessibility": _current_accessibility_state(),
                                     "error": {
                                         "code": "VOICE_INPUT_FAILED",
                                         "type": "SpeechToTextError",
@@ -546,6 +688,7 @@ def main() -> int:
                                 "voice": _voice_state(),
                                 "source": "voice",
                                 "transcript": "",
+                                "accessibility": _current_accessibility_state(),
                             },
                         )
                     )
@@ -565,8 +708,10 @@ def main() -> int:
                     # OUTPUT phase - speak result
                     _set_pipeline_state("output")
                     result["transcript"] = transcript
-                    result["voice"] = _voice_state()
                     _speak_response(result)
+                    _apply_accessibility_side_effects(result)
+                    result["voice"] = _voice_state()
+                    result["accessibility"] = _current_accessibility_state()
                     result["pipeline_state"] = "idle"
                     if request_id is not None:
                         result["request_id"] = request_id
@@ -583,6 +728,7 @@ def main() -> int:
                                 "voice": _voice_state(),
                                 "source": "voice",
                                 "transcript": transcript,
+                                "accessibility": _current_accessibility_state(),
                             },
                         )
                     )
@@ -592,17 +738,46 @@ def main() -> int:
 
             if action == "update_preferences":
                 try:
+                    if "blind_mode_enabled" in payload:
+                        blind_mode_enabled = bool(payload.get("blind_mode_enabled"))
+                    if "narration_level" in payload:
+                        narration_level = _normalize_narration_level(payload.get("narration_level"))
+                    if "screen_reader_hints_enabled" in payload:
+                        screen_reader_hints_enabled = bool(payload.get("screen_reader_hints_enabled"))
+
                     runtime.set_preferences(
                         speed=payload.get("speed"),
                         permission_profile=payload.get("permission_profile"),
+                        blind_mode_enabled=blind_mode_enabled,
+                        narration_level=narration_level,
+                        screen_reader_hints_enabled=screen_reader_hints_enabled,
                     )
-                    if "voice_output_enabled" in payload:
+
+                    if "blind_mode_enabled" in payload:
+                        if blind_mode_enabled:
+                            _emit_announcement("Blind mode enabled. Voice guidance is active.", priority="assertive")
+                        else:
+                            _emit_announcement("Blind mode disabled.", priority="polite")
+
+                    if blind_mode_enabled:
+                        _apply_blind_mode_voice_requirements()
+                        guidance = _blind_mode_availability_guidance()
+                        if guidance:
+                            _emit_announcement(guidance, priority="assertive")
+                    elif "voice_output_enabled" in payload:
                         requested = bool(payload.get("voice_output_enabled"))
+                        requested_voice_output = requested
                         voice_output_enabled = requested and bool(
                             voice_controller and voice_controller.tts_available
                         )
-                    if "voice_input_enabled" in payload:
+
+                    if blind_mode_enabled:
+                        # In blind mode we always request input/output voice path.
+                        requested_voice_input = True
+                        requested_voice_output = True
+                    elif "voice_input_enabled" in payload:
                         requested = bool(payload.get("voice_input_enabled"))
+                        requested_voice_input = requested
                         voice_input_enabled = requested and bool(
                             voice_controller and voice_controller.stt_available
                         )
@@ -612,6 +787,7 @@ def main() -> int:
                         "status": "updated",
                         "message": "Preferences updated",
                         "voice": _voice_state(),
+                        "accessibility": _current_accessibility_state(),
                     }
                     if request_id is not None:
                         response["request_id"] = request_id
@@ -623,27 +799,17 @@ def main() -> int:
                             code="UPDATE_PREFERENCES_FAILED",
                             request_id=request_id,
                             error=exc,
-                            extra={"voice": _voice_state()},
+                            extra={"voice": _voice_state(), "accessibility": _current_accessibility_state()},
                         )
                     )
                 continue
 
             if action == "get_state":
-                _write_json(
-                    {
-                        "status": "state",
-                        "pending_confirmation": bool(runtime.session.pending_steps),
-                        "pending_clarification": bool(runtime.session.pending_clarification),
-                        "clarification_prompt": (runtime.session.pending_clarification or {}).get("prompt", ""),
-                        "last_app": runtime.session.last_app,
-                        "history_count": len(runtime.session.history),
-                        "affection": runtime.session.last_affection,
-                    }
-                )
                 response = {
                     "status": "state",
                     **_runtime_state(runtime),
                     "voice": _voice_state(),
+                    "accessibility": _current_accessibility_state(),
                 }
                 if request_id is not None:
                     response["request_id"] = request_id
@@ -662,6 +828,7 @@ def main() -> int:
                     message=f"Unknown action: {action}",
                     code="UNKNOWN_ACTION",
                     request_id=request_id,
+                    extra={"accessibility": _current_accessibility_state(), "voice": _voice_state()},
                 )
             )
     finally:

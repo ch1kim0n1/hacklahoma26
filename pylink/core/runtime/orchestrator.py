@@ -100,6 +100,11 @@ class PixelLinkRuntime:
         # Pre-task announcement callback (called BEFORE execution)
         self._on_pre_task_announce: Any | None = None
 
+        # Accessibility runtime preferences.
+        self.blind_mode_enabled = False
+        self.narration_level = "concise"
+        self.screen_reader_hints_enabled = True
+
         # Initialize file system context in background
         threading.Thread(target=self.session.filesystem.index_files, daemon=True).start()
 
@@ -180,16 +185,40 @@ class PixelLinkRuntime:
         *,
         speed: float | None = None,
         permission_profile: dict[str, bool] | None = None,
+        blind_mode_enabled: bool | None = None,
+        narration_level: str | None = None,
+        screen_reader_hints_enabled: bool | None = None,
     ) -> None:
         if speed is not None:
             self.executor.set_speed(speed)
         if permission_profile is not None:
             self.guard.set_allowed_actions(permission_profile)
+        if blind_mode_enabled is not None:
+            self.blind_mode_enabled = bool(blind_mode_enabled)
+        if narration_level is not None:
+            self.narration_level = "verbose" if str(narration_level).lower() == "verbose" else "concise"
+        if screen_reader_hints_enabled is not None:
+            self.screen_reader_hints_enabled = bool(screen_reader_hints_enabled)
+
+    def get_accessibility_state(self) -> dict[str, Any]:
+        return {
+            "blind_mode_enabled": bool(self.blind_mode_enabled),
+            "narration_level": self.narration_level,
+            "screen_reader_hints_enabled": bool(self.screen_reader_hints_enabled),
+        }
 
     def handle_input(self, raw_text: str, source: str = "text") -> dict[str, Any]:
         cleaned_text = " ".join((raw_text or "").strip().split())
         if not cleaned_text:
             return self._response("idle", "No input provided.", source=source)
+
+        deterministic_intent = parse_intent(cleaned_text, self.session)
+        if deterministic_intent.name in {"set_blind_mode", "read_status", "repeat_last_response", "blind_help"}:
+            self.session.record_intent(deterministic_intent.name, cleaned_text)
+            return self._handle_local_accessibility_intent(deterministic_intent, source)
+
+        if self.session.pending_steps and deterministic_intent.name in {"confirm", "cancel"}:
+            return self._handle_pending(deterministic_intent.name, source)
 
         affection_assessment = self.affection_nlu.analyze(cleaned_text, self.session)
 
@@ -225,6 +254,75 @@ class PixelLinkRuntime:
 
         # Continue with non-conversational flow for legacy support
         return self._process_intent(intent, cleaned_text, source)
+
+    def _handle_local_accessibility_intent(self, intent: Intent, source: str) -> dict[str, Any]:
+        if intent.name == "set_blind_mode":
+            enabled = bool(intent.entities.get("enabled"))
+            self.set_preferences(blind_mode_enabled=enabled)
+            mode_label = "enabled" if enabled else "disabled"
+            message = (
+                f"Blind mode {mode_label}. "
+                + (
+                    "Voice guidance is active. Say 'blind help' for available commands."
+                    if enabled
+                    else "Standard mode restored."
+                )
+            )
+            return self._response("completed", message, source=source, intent=intent)
+
+        if intent.name == "read_status":
+            return self._response(
+                "completed",
+                self._build_status_message(),
+                source=source,
+                intent=intent,
+            )
+
+        if intent.name == "repeat_last_response":
+            message = self.session.last_response_message or "There is no previous response to repeat yet."
+            return self._response("completed", message, source=source, intent=intent)
+
+        if intent.name == "blind_help":
+            return self._response(
+                "completed",
+                self._build_blind_help_message(),
+                source=source,
+                intent=intent,
+            )
+
+        return self._response("unknown", "Unsupported accessibility command.", source=source, intent=intent)
+
+    def _build_status_message(self) -> str:
+        pending_confirmation = bool(self.session.pending_steps)
+        pending_clarification = bool(self.session.pending_clarification)
+
+        if pending_clarification:
+            base = "Status: waiting for clarification."
+        elif pending_confirmation:
+            base = "Status: waiting for confirmation."
+        else:
+            base = "Status: ready."
+
+        parts = [base]
+        if self.session.last_app:
+            parts.append(f"Current app: {self.session.last_app}.")
+        if pending_clarification:
+            prompt = (self.session.pending_clarification or {}).get("prompt", "").strip()
+            if prompt:
+                parts.append(f"Prompt: {prompt}")
+        elif pending_confirmation:
+            parts.append("Say confirm to continue or cancel to stop.")
+
+        return " ".join(part for part in parts if part).strip()
+
+    def _build_blind_help_message(self) -> str:
+        return (
+            "Blind mode commands: "
+            "say 'read status' to hear current state, "
+            "'repeat last response' to replay output, "
+            "'enable blind mode' or 'disable blind mode' to switch modes, "
+            "and use 'confirm' or 'cancel' when prompted."
+        )
 
     def _handle_conversational_input(self, cleaned_text: str, source: str) -> dict[str, Any]:
         """Handle user input using conversational AI with clarification and confirmation."""
@@ -273,10 +371,10 @@ class PixelLinkRuntime:
             confirmation_summary = analysis.get("confirmation_summary", "")
             action_description = SENSITIVE_ACTIONS.get(intent_name, "this action")
 
-            # Build detailed confirmation message
-            confirm_message = f"⚠️ Sensitive action: {action_description}\n\n"
-            confirm_message += f"{confirmation_summary}\n\n"
-            confirm_message += "Please say 'confirm' or 'yes' to proceed, or 'cancel' to abort."
+            confirm_message = f"Sensitive action: {action_description}. "
+            if confirmation_summary:
+                confirm_message += f"{confirmation_summary.strip()} "
+            confirm_message += "Say confirm to proceed or cancel to abort."
 
             self.session.set_pending_clarification({
                 "intent_name": intent_name,
@@ -1011,7 +1109,7 @@ class PixelLinkRuntime:
             self.session.set_pending(result.pending_steps)
             return self._response(
                 "awaiting_confirmation",
-                "Awaiting confirmation to proceed.",
+                "Awaiting confirmation to proceed. Say confirm to continue or cancel to stop.",
                 source=source,
                 intent=intent,
                 steps=steps,
@@ -1127,7 +1225,7 @@ class PixelLinkRuntime:
             return self._response("canceled", "Pending actions canceled.", source=source)
         return self._response(
             "awaiting_confirmation",
-            "Type confirm or cancel to continue.",
+            "Awaiting confirmation. Say confirm or cancel.",
             source=source,
             pending_confirmation=True,
         )
@@ -1236,9 +1334,16 @@ class PixelLinkRuntime:
         if active_affection.get("should_intervene") and status not in {"blocked", "error", "support_required"}:
             affection_notice = intervention.get("message", "")
 
+        normalized_message = str(message or "").strip()
+        if self.blind_mode_enabled and self.narration_level == "concise":
+            normalized_message = _compact_for_concise_narration(normalized_message)
+        status_line = self._build_status_message()
+        self.session.set_last_response(normalized_message)
+        self.session.set_last_status(status_line)
+
         return {
             "status": status,
-            "message": message,
+            "message": normalized_message,
             "source": source,
             "intent": serialized_intent,
             "steps": serialized_steps,
@@ -1247,6 +1352,7 @@ class PixelLinkRuntime:
             "clarification_prompt": (self.session.pending_clarification or {}).get("prompt", ""),
             "last_app": self.session.last_app,
             "history_count": len(self.session.history),
+            "status_line": status_line,
             "suggestions": final_suggestions,
             "affection": active_affection,
             "affection_notice": affection_notice,
@@ -1255,6 +1361,7 @@ class PixelLinkRuntime:
             "emotional_summary": active_affection.get("emotional_summary", ""),
             "cognitive_state": active_affection.get("cognitive_state", {}),
             "proactive_suggestions": active_affection.get("proactive_suggestions", []),
+            "accessibility": self.get_accessibility_state(),
         }
 
 
@@ -1285,3 +1392,15 @@ def _merge_unique_suggestions(primary: list[str], secondary: list[str], limit: i
         if len(merged) >= limit:
             break
     return merged
+
+
+def _compact_for_concise_narration(message: str) -> str:
+    text = " ".join(message.split())
+    if not text:
+        return text
+    if "confirm" in text.lower() and "cancel" in text.lower():
+        return text
+    if len(text) <= 220:
+        return text
+    sentence_split = re.split(r"(?<=[.!?])\s+", text)
+    return sentence_split[0][:220].strip()

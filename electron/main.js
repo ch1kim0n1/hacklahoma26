@@ -26,6 +26,12 @@ const runtimeState = {
   pendingClarification: false,
   clarificationPrompt: "",
   lastResult: null,
+  accessibility: {
+    blindModeEnabled: false,
+    narrationLevel: "concise",
+    screenReaderHintsEnabled: true,
+    lastAnnouncement: ""
+  },
   voice: {
     requestedInput: true,
     requestedOutput: true,
@@ -141,6 +147,26 @@ function normalizeEyeState(payload) {
   };
 }
 
+function normalizeAccessibilityState(payload) {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  return {
+    blindModeEnabled: Boolean(payload.blindModeEnabled ?? payload.blind_mode_enabled ?? runtimeState.accessibility.blindModeEnabled),
+    narrationLevel: String(payload.narrationLevel ?? payload.narration_level ?? runtimeState.accessibility.narrationLevel) === "verbose"
+      ? "verbose"
+      : "concise",
+    screenReaderHintsEnabled: Boolean(
+      payload.screenReaderHintsEnabled
+      ?? payload.screen_reader_hints_enabled
+      ?? runtimeState.accessibility.screenReaderHintsEnabled
+    ),
+    lastAnnouncement: String(
+      (payload.lastAnnouncement ?? payload.last_announcement ?? runtimeState.accessibility.lastAnnouncement) || ""
+    )
+  };
+}
+
 function applyRuntimeResult(result) {
   runtimeState.lastResult = result;
   if (result.pipeline_state) {
@@ -166,6 +192,13 @@ function applyRuntimeResult(result) {
       runtimeState.eyeControl = normalizedEye;
     }
   }
+  const normalizedAccessibility = normalizeAccessibilityState(result.accessibility);
+  if (normalizedAccessibility) {
+    runtimeState.accessibility = {
+      ...runtimeState.accessibility,
+      ...normalizedAccessibility
+    };
+  }
   broadcast("runtime:update", runtimeState);
 }
 
@@ -185,6 +218,13 @@ function applyBridgeReadyPayload(payload) {
     if (normalizedEye) {
       runtimeState.eyeControl = normalizedEye;
     }
+  }
+  const normalizedAccessibility = normalizeAccessibilityState(payload.accessibility);
+  if (normalizedAccessibility) {
+    runtimeState.accessibility = {
+      ...runtimeState.accessibility,
+      ...normalizedAccessibility
+    };
   }
   broadcast("runtime:update", runtimeState);
 }
@@ -223,6 +263,25 @@ function onBridgeLine(rawLine) {
         model
       };
       broadcast("runtime:voice-model-status", model);
+      broadcast("runtime:update", runtimeState);
+    }
+    return;
+  }
+
+  if (payload.status === "announcement" || payload.status === "pre_task_announcement") {
+    const message = String(payload.message || "").trim();
+    const priority = String(payload.priority || "polite").toLowerCase() === "assertive" ? "assertive" : "polite";
+    if (message) {
+      runtimeState.accessibility.lastAnnouncement = message;
+      const normalizedAccessibility = normalizeAccessibilityState(payload.accessibility);
+      if (normalizedAccessibility) {
+        runtimeState.accessibility = {
+          ...runtimeState.accessibility,
+          ...normalizedAccessibility,
+          lastAnnouncement: message
+        };
+      }
+      broadcast("runtime:announcement", { message, priority });
       broadcast("runtime:update", runtimeState);
     }
     return;
@@ -567,13 +626,23 @@ function registerIpcHandlers() {
       speed,
       permission_profile: permissionProfile,
       voice_output_enabled: payload?.voiceOutputEnabled,
-      voice_input_enabled: payload?.voiceInputEnabled
+      voice_input_enabled: payload?.voiceInputEnabled,
+      blind_mode_enabled: payload?.blindModeEnabled,
+      narration_level: payload?.narrationLevel,
+      screen_reader_hints_enabled: payload?.screenReaderHintsEnabled
     });
     const normalizedVoice = normalizeVoiceState(response.voice);
     if (normalizedVoice) {
       runtimeState.voice = {
         ...runtimeState.voice,
         ...normalizedVoice
+      };
+    }
+    const normalizedAccessibility = normalizeAccessibilityState(response.accessibility);
+    if (normalizedAccessibility) {
+      runtimeState.accessibility = {
+        ...runtimeState.accessibility,
+        ...normalizedAccessibility
       };
     }
     broadcast("runtime:update", runtimeState);

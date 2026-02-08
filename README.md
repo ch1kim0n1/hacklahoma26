@@ -214,6 +214,26 @@ npm run start:dry-run
 
 See details in `electron/README.md`.
 
+### Blind Mode (V1)
+
+PixelLink now includes a persistent **Blind Mode** for non-visual operation in the desktop app.
+
+How to use:
+
+1. Open the desktop console and enable **Blind Mode** in Preferences.
+2. Use voice commands or keyboard shortcuts:
+   - `V` starts voice capture
+   - `S` reads current status
+   - `R` repeats the last response
+3. Use spoken control commands:
+   - `enable blind mode` / `disable blind mode`
+   - `read status`
+   - `repeat last response`
+   - `blind help`
+4. For sensitive actions, PixelLink explicitly asks for `confirm` or `cancel`.
+
+Blind Mode forces voice feedback on and emits screen-reader-friendly live announcements in the Electron UI.
+
 ---
 
 ## Mission Implementation Plan

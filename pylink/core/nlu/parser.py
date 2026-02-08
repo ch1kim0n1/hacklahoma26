@@ -229,6 +229,41 @@ def _parse_send_text(original: str, lowered: str) -> Intent | None:
     return None
 
 
+def _parse_blind_mode_control(original: str, cleaned: str) -> Intent | None:
+    if re.search(
+        r"\b(i am blind and need help|i'm blind and need help|im blind and need help|i am blind)\b",
+        cleaned,
+    ):
+        return Intent(
+            name="set_blind_mode",
+            entities={"enabled": True},
+            confidence=0.98,
+            raw_text=original,
+        )
+
+    if re.search(r"\b(enable|turn on|activate|start)\b", cleaned) and re.search(
+        r"\b(blind mode|accessibility mode|screen reader mode|non visual mode)\b", cleaned
+    ):
+        return Intent(
+            name="set_blind_mode",
+            entities={"enabled": True},
+            confidence=0.96,
+            raw_text=original,
+        )
+
+    if re.search(r"\b(disable|turn off|deactivate|stop)\b", cleaned) and re.search(
+        r"\b(blind mode|accessibility mode|screen reader mode|non visual mode)\b", cleaned
+    ):
+        return Intent(
+            name="set_blind_mode",
+            entities={"enabled": False},
+            confidence=0.96,
+            raw_text=original,
+        )
+
+    return None
+
+
 def parse_intent(text: str, context=None) -> Intent:
     lowered = text.lower().strip()
     cleaned = re.sub(r"\b(can you|could you|please|the|a|an|for me)\b", "", lowered).strip()
@@ -238,6 +273,21 @@ def parse_intent(text: str, context=None) -> Intent:
 
     if lowered in {"cancel", "stop", "abort", "no", "n", "nevermind", "nope", "never mind"}:
         return Intent(name="cancel", confidence=1.0, raw_text=text)
+
+    blind_mode_intent = _parse_blind_mode_control(text, cleaned)
+    if blind_mode_intent:
+        return blind_mode_intent
+
+    if re.search(r"\b(read|say|speak|check|what(?:'s| is))\b", cleaned) and re.search(
+        r"\b(status|current status|state)\b", cleaned
+    ):
+        return Intent(name="read_status", confidence=0.92, raw_text=text)
+
+    if re.search(r"\b(repeat|say again|read again|repeat that|last response)\b", cleaned):
+        return Intent(name="repeat_last_response", confidence=0.9, raw_text=text)
+
+    if re.search(r"\b(blind help|accessibility help|help blind mode|blind mode help)\b", cleaned):
+        return Intent(name="blind_help", confidence=0.92, raw_text=text)
 
     if re.search(r"\b(check|show|analyze|what(?:'s| is)|how)\b", cleaned) and re.search(
         r"\b(mood|affection|emotional state|emotion)\b",

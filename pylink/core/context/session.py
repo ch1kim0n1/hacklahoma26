@@ -17,6 +17,8 @@ class SessionContext:
     filesystem: FileSystemContext = field(default_factory=FileSystemContext)
     mood_history: List[dict[str, Any]] = field(default_factory=list)
     last_affection: dict[str, Any] | None = None
+    last_response_message: str = ""
+    last_status_message: str = ""
 
     def record_intent(self, intent_name: str, raw_text: str) -> None:
         self.last_intent = intent_name
@@ -52,6 +54,12 @@ class SessionContext:
         self.mood_history.append(payload)
         if len(self.mood_history) > 40:
             self.mood_history = self.mood_history[-40:]
+
+    def set_last_response(self, message: str) -> None:
+        self.last_response_message = message.strip()
+
+    def set_last_status(self, message: str) -> None:
+        self.last_status_message = message.strip()
     
     def add_browsing_entry(self, url: str, title: str = "", search_query: str = "") -> None:
         """Add a URL to browsing history."""
