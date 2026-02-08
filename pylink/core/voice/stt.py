@@ -383,14 +383,14 @@ class SpeechToText:
             self.silence_threshold * self.SAMPLE_RATE / self.CHUNK_SIZE
         )
         max_chunks = int(self.max_duration * self.SAMPLE_RATE / self.CHUNK_SIZE)
-        energy_threshold = 500  # Adjust based on environment
+        energy_threshold = 200  # Lowered for better sensitivity
 
         # Wait for voice activity to start
         voice_started = False
         startup_chunks = 0
         max_startup_wait = int(
-            10 * self.SAMPLE_RATE / self.CHUNK_SIZE
-        )  # 10 seconds max wait
+            30 * self.SAMPLE_RATE / self.CHUNK_SIZE
+        )  # 30 seconds max wait for continuous listening
 
         try:
             for _ in range(max_chunks + max_startup_wait):
