@@ -25,6 +25,9 @@ const state = {
 
 const elements = {
   consoleRoot: document.querySelector(".console"),
+  consoleToggleBtn: document.getElementById("consoleToggleBtn"),
+  toggleIcon: document.getElementById("toggleIcon"),
+  agentIcon: document.getElementById("agentIcon"),
   statusDot: document.getElementById("statusDot"),
   statusText: document.getElementById("statusText"),
   logArea: document.getElementById("logArea"),
@@ -278,11 +281,59 @@ function applyAccessibilityFromRuntime(runtime) {
   }
 }
 
+function updateAgentIcon(runtime) {
+  const pipelineState = runtime?.pipelineState || "idle";
+  let iconSrc = "../assets/idle.png";
+  const isListening = pipelineState === "listen";
+  const isAction = ["processing", "action", "output"].includes(pipelineState);
+
+  if (isListening) {
+    iconSrc = "../assets/listening.png";
+  } else if (isAction) {
+    iconSrc = "../assets/action.png";
+  }
+
+  if (elements.agentIcon) {
+    elements.agentIcon.src = iconSrc;
+  }
+
+  if (elements.toggleIcon) {
+    elements.toggleIcon.src = iconSrc;
+  }
+
+  if (elements.consoleToggleBtn) {
+    elements.consoleToggleBtn.classList.toggle("listening", isListening);
+    elements.consoleToggleBtn.classList.toggle("action", isAction);
+  }
+}
+
+function setConsoleVisibility(visible) {
+  if (!elements.consoleRoot) {
+    return;
+  }
+  elements.consoleRoot.classList.toggle("is-hidden", !visible);
+  if (elements.consoleToggleBtn) {
+    elements.consoleToggleBtn.setAttribute(
+      "aria-label",
+      visible ? "Hide Maes console" : "Show Maes console"
+    );
+  }
+}
+
+function toggleConsoleVisibility() {
+  if (!elements.consoleRoot) {
+    return;
+  }
+  const isHidden = elements.consoleRoot.classList.contains("is-hidden");
+  setConsoleVisibility(isHidden);
+}
+
 function updateRuntime(runtime) {
   state.runtime = runtime;
   applyAccessibilityFromRuntime(runtime);
   setStatus(runtime);
   updateVoiceModelStatus(runtime?.voice?.model);
+  updateAgentIcon(runtime);
   updateVoiceButtonState();
   updateEyeControlButton();
   updateEyePreview(runtime);
@@ -682,6 +733,12 @@ function bindEvents() {
       appendLog("error", "Eye Control", String(error.message || error));
     }
   });
+
+  if (elements.consoleToggleBtn) {
+    elements.consoleToggleBtn.addEventListener("click", () => {
+      toggleConsoleVisibility();
+    });
+  }
 
   elements.hideBtn.addEventListener("click", async () => {
     await window.pixelink.hideMain();

@@ -3,16 +3,21 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Maes Launcher</title>
+  <title>Maes Voice Dock</title>
   <link rel="stylesheet" href="./launcher.css" />
 </head>
 <body>
-  <button id="openBtn" class="launcher-btn" type="button" aria-label="Open Maes">
-    <span class="dot status-offline" id="launcherDot"></span>
-    <span class="label">M</span>
-  </button>
+  <div class="dock" aria-label="Voice launcher dock">
+    <button id="statusBtn" class="dock-btn status-btn stage-idle" type="button" aria-label="Agent status indicator">
+      <img id="statusIcon" class="btn-icon" src="../../assets/idle.png" alt="Agent status icon" />
+      <span id="statusDot" class="status-dot status-offline"></span>
+    </button>
+
+    <button id="voiceBtn" class="dock-btn voice-btn" type="button" aria-label="Start voice agent">
+      <img class="btn-icon" src="../../assets/listening.png" alt="Voice agent icon" />
+    </button>
+  </div>
 
   <script src="./launcher.js"></script>
 </body>
 </html>
-

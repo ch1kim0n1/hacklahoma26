@@ -7,13 +7,20 @@
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
-  <main class="console" role="main" aria-label="Maes console">
+  <button id="consoleToggleBtn" class="console-toggle-btn" type="button" aria-label="Toggle Maes console">
+    <img id="toggleIcon" src="../assets/idle.png" alt="Maes status" />
+  </button>
+  <main class="console is-hidden" role="main" aria-label="Maes console">
     <header class="console-header">
-      <h1>Maes</h1>
+      <div class="header-left">
+        <img id="agentIcon" class="agent-icon" src="../assets/idle.png" alt="Agent status" />
+        <h1>Maes</h1>
+      </div>
       <div class="status-wrap" role="status" aria-live="polite" aria-atomic="true">
         <span id="statusDot" class="status-dot status-offline"></span>
         <span id="statusText">Offline</span>
       </div>
+      <div class="header-badge">v1.0</div>
       <button id="hideBtn" class="hide-btn" type="button" aria-label="Hide Maes window">Hide</button>
     </header>
 

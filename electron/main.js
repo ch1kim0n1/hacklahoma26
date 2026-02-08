@@ -529,14 +529,14 @@ function createMainWindow() {
 }
 
 function createLauncherWindow() {
-  const launcherSize = 62;
+  const launcherHeight = 110;
   const { workArea } = screen.getPrimaryDisplay();
-  const x = Math.round(workArea.x + workArea.width - launcherSize - 18);
-  const y = Math.round(workArea.y + workArea.height - launcherSize - 18);
+  const x = Math.round(workArea.x);
+  const y = Math.round(workArea.y + workArea.height - launcherHeight);
 
   launcherWindow = new BrowserWindow({
-    width: launcherSize,
-    height: launcherSize,
+    width: Math.round(workArea.width),
+    height: launcherHeight,
     x,
     y,
     show: true,
@@ -650,8 +650,8 @@ function registerIpcHandlers() {
   });
 
   ipcMain.handle("ui:open-main", async () => {
-    openMainWindow();
-    return { ok: true };
+    // Debug console UI stays hidden by default.
+    return { ok: false, hidden: true };
   });
 
   ipcMain.handle("ui:hide-main", async () => {
@@ -703,8 +703,6 @@ app.whenReady().then(async () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createMainWindow();
       createLauncherWindow();
-    } else {
-      openMainWindow();
     }
   });
 });
