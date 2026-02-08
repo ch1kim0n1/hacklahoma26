@@ -11,8 +11,15 @@ from core.nlu.affection_model import AffectionNLUModel
 from core.nlu.emotional_intelligence import EmotionalIntelligenceEngine
 from core.nlu.intents import Intent
 from core.nlu.parser import parse_intent
+from core.nlu.llm_brain import (
+    get_conversational_ai,
+    analyze_with_conversation,
+    generate_completion_message,
+    SENSITIVE_ACTIONS,
+)
 from core.planner.action_planner import ActionPlanner
 from core.safety.guard import KillSwitch, SafetyGuard
+from core.browser.browser_agent import BrowserAgent, get_browser_agent, close_browser_agent
 
 
 DEFAULT_PERMISSION_PROFILE = {
@@ -42,6 +49,11 @@ DEFAULT_PERMISSION_PROFILE = {
     "emotional_reschedule": True,
     "emotional_lighten": True,
     "emotional_check_in": True,
+    # Browser automation actions (AI-powered)
+    "browser_task": True,
+    "browser_fill_form": True,
+    "browser_click": True,
+    "browser_extract": True,
 }
 
 
@@ -75,7 +87,14 @@ class PixelLinkRuntime:
         self._current_affection: dict[str, Any] | None = None
         self.executor.set_speed(speed)
         self.guard.set_allowed_actions(permission_profile or DEFAULT_PERMISSION_PROFILE)
-        self._cursor_lock = threading.Lock()
+
+        # Browser agent for AI-powered browser automation
+        self._browser_agent: BrowserAgent | None = None
+        self._browser_headless = False
+
+        # Conversational AI for user interaction
+        self._conversational_ai = get_conversational_ai()
+        self._use_conversational_mode = True  # Enable conversational AI by default
 
         # Initialize file system context in background
         threading.Thread(target=self.session.filesystem.index_files, daemon=True).start()
@@ -83,6 +102,54 @@ class PixelLinkRuntime:
     def close(self) -> None:
         if self.enable_kill_switch:
             self.kill_switch.stop()
+        # Close browser agent if it exists
+        if self._browser_agent:
+            try:
+                import asyncio
+                asyncio.run(self._browser_agent.close())
+            except Exception:
+                pass
+
+    def _get_browser_agent(self) -> BrowserAgent:
+        """Get or create the browser agent instance."""
+        if self._browser_agent is None:
+            self._browser_agent = BrowserAgent(headless=self._browser_headless)
+        return self._browser_agent
+
+    async def _execute_browser_action(self, action: str, params: dict) -> dict[str, Any]:
+        """Execute a browser automation action."""
+        agent = self._get_browser_agent()
+
+        if action == "browser_task":
+            instruction = params.get("instruction", "")
+            url = params.get("url")
+            if url:
+                instruction = f"First navigate to {url}, then {instruction}"
+            return await agent.run_task(instruction)
+
+        elif action == "browser_fill_form":
+            form_type = params.get("form_type", "form")
+            fields = params.get("fields", {})
+            instruction = params.get("instruction", "")
+            if fields:
+                return await agent.fill_form(form_type, fields)
+            else:
+                # Use the original instruction for AI to figure out
+                return await agent.run_task(instruction)
+
+        elif action == "browser_click":
+            element = params.get("element", "")
+            instruction = params.get("instruction", "")
+            if element:
+                return await agent.click_element(element)
+            else:
+                return await agent.run_task(instruction)
+
+        elif action == "browser_extract":
+            content_type = params.get("content_type", "main content")
+            return await agent.extract_content(content_type)
+
+        return {"success": False, "message": f"Unknown browser action: {action}"}
 
     def set_preferences(
         self,
@@ -94,12 +161,6 @@ class PixelLinkRuntime:
             self.executor.set_speed(speed)
         if permission_profile is not None:
             self.guard.set_allowed_actions(permission_profile)
-
-    def move_cursor(self, x: int, y: int) -> None:
-        """Move the system mouse cursor to (x, y). Thread-safe for use from eye control."""
-        with self._cursor_lock:
-            # Eye tracking updates at video frame rate; instant moves avoid cumulative lag.
-            self.executor.mouse.move_to(x, y, duration=0.0)
 
     def handle_input(self, raw_text: str, source: str = "text") -> dict[str, Any]:
         cleaned_text = " ".join((raw_text or "").strip().split())
@@ -123,14 +184,183 @@ class PixelLinkRuntime:
         self._current_affection = affection_assessment.to_dict()
         self.session.record_affection(self._current_affection, cleaned_text)
 
+        # Handle pending clarification from conversational AI
         if self.session.pending_clarification:
             return self._handle_clarification(cleaned_text, source)
 
+        # Use conversational AI to analyze the request
+        if self._use_conversational_mode:
+            return self._handle_conversational_input(cleaned_text, source)
+
+        # Fallback to direct intent parsing
         intent = parse_intent(cleaned_text, self.session)
         self.session.record_intent(intent.name, cleaned_text)
 
         if self.session.pending_steps:
             return self._handle_pending(intent.name, source)
+
+        # Continue with non-conversational flow for legacy support
+        return self._process_intent(intent, cleaned_text, source)
+
+    def _handle_conversational_input(self, cleaned_text: str, source: str) -> dict[str, Any]:
+        """Handle user input using conversational AI with clarification and confirmation."""
+        # Build context for conversational AI
+        context = {
+            "last_intent": self.session.history[-1]["intent"] if self.session.history else None,
+            "last_app": self.session.last_app,
+            "pending_clarification": self.session.pending_clarification,
+        }
+
+        # Analyze with conversational AI
+        analysis = analyze_with_conversation(cleaned_text, context)
+        status = analysis.get("status", "ready")
+        intent_name = analysis.get("intent", "unknown")
+        entities = analysis.get("entities", {})
+        confidence = analysis.get("confidence", 0.5)
+        user_message = analysis.get("user_message", "")
+
+        # Handle different statuses
+        if status == "needs_clarification":
+            # AI needs more information - ask the user
+            clarification_question = analysis.get("clarification_question", "Could you provide more details?")
+            missing_info = analysis.get("missing_info", [])
+
+            self.session.set_pending_clarification({
+                "intent_name": intent_name,
+                "clarification_type": "conversational_ai",
+                "entities": entities,
+                "missing_info": missing_info,
+                "prompt": clarification_question,
+                "original_text": cleaned_text,
+            })
+
+            return self._response(
+                "awaiting_clarification",
+                user_message or clarification_question,
+                source=source,
+                intent=Intent(name=intent_name, entities=entities, confidence=confidence, raw_text=cleaned_text),
+                pending_clarification=True,
+            )
+
+        elif status == "confirm_sensitive":
+            # Sensitive action requires confirmation - repeat info and ask
+            confirmation_summary = analysis.get("confirmation_summary", "")
+            action_description = SENSITIVE_ACTIONS.get(intent_name, "this action")
+
+            # Build detailed confirmation message
+            confirm_message = f"⚠️ Sensitive action: {action_description}\n\n"
+            confirm_message += f"{confirmation_summary}\n\n"
+            confirm_message += "Please say 'confirm' or 'yes' to proceed, or 'cancel' to abort."
+
+            self.session.set_pending_clarification({
+                "intent_name": intent_name,
+                "clarification_type": "confirm_sensitive_action",
+                "entities": entities,
+                "confirmation_summary": confirmation_summary,
+                "prompt": confirm_message,
+                "original_text": cleaned_text,
+            })
+
+            # Store the pending action in conversational AI
+            self._conversational_ai.pending_action = {
+                "intent": intent_name,
+                "entities": entities,
+                "confirmation_summary": confirmation_summary,
+            }
+
+            return self._response(
+                "awaiting_confirmation",
+                user_message or confirm_message,
+                source=source,
+                intent=Intent(name=intent_name, entities=entities, confidence=confidence, raw_text=cleaned_text),
+                pending_confirmation=True,
+            )
+
+        else:  # status == "ready"
+            # AI is confident - proceed with execution
+            intent = Intent(name=intent_name, entities=entities, confidence=confidence, raw_text=cleaned_text)
+            self.session.record_intent(intent.name, cleaned_text)
+
+            # Check if this is a browser task - send to browser-use
+            if intent_name.startswith("browser_"):
+                return self._execute_browser_with_confirmation(intent, source, user_message)
+
+            # Execute the intent and generate completion message
+            result = self._execute_intent_with_completion(intent, source)
+
+            # Add AI's friendly message if available
+            if user_message and result.get("status") == "completed":
+                result["message"] = f"{user_message}\n\n{result.get('message', '')}"
+
+            return result
+
+    def _execute_browser_with_confirmation(
+        self,
+        intent: Intent,
+        source: str,
+        pre_message: str = ""
+    ) -> dict[str, Any]:
+        """Execute browser action and confirm completion to user."""
+        import asyncio
+
+        steps = self.planner.plan(intent, self.session, self.guard)
+
+        for step in steps:
+            if step.action.startswith("browser_"):
+                try:
+                    result = asyncio.run(self._execute_browser_action(step.action, step.params))
+
+                    # Generate completion message using OpenAI
+                    success = result.get("success", False)
+                    result_msg = result.get("message", "")
+                    completion_message = generate_completion_message(intent.name, success, result_msg)
+
+                    if success:
+                        full_message = f"{pre_message}\n\n{completion_message}" if pre_message else completion_message
+                        return self._response(
+                            "completed",
+                            full_message.strip(),
+                            source=source,
+                            intent=intent,
+                            steps=steps,
+                        )
+                    else:
+                        return self._response(
+                            "error",
+                            completion_message,
+                            source=source,
+                            intent=intent,
+                            steps=steps,
+                        )
+                except Exception as e:
+                    error_msg = generate_completion_message(intent.name, False, str(e))
+                    return self._response(
+                        "error",
+                        error_msg,
+                        source=source,
+                        intent=intent,
+                        steps=steps,
+                    )
+
+        return self._response("error", "No browser action to execute.", source=source, intent=intent)
+
+    def _execute_intent_with_completion(self, intent: Intent, source: str) -> dict[str, Any]:
+        """Execute intent and generate AI completion message."""
+        result = self._execute_intent(intent, source)
+
+        # Generate completion message for successful executions
+        if result.get("status") == "completed":
+            success_msg = generate_completion_message(
+                intent.name,
+                True,
+                result.get("message", "")
+            )
+            result["message"] = success_msg
+
+        return result
+
+    def _process_intent(self, intent: Intent, cleaned_text: str, source: str) -> dict[str, Any]:
+        """Process intent after parsing (legacy flow without conversational AI)."""
 
         if intent.name == "check_mood":
             mood_percent = self._current_affection.get("mood_percent", 0.0)
@@ -624,6 +854,38 @@ class PixelLinkRuntime:
                 steps=steps,
             )
 
+        # Handle browser automation actions
+        if any(step.action.startswith("browser_") for step in steps):
+            import asyncio
+            for step in steps:
+                if step.action.startswith("browser_"):
+                    try:
+                        result = asyncio.run(self._execute_browser_action(step.action, step.params))
+                        if result.get("success"):
+                            return self._response(
+                                "completed",
+                                result.get("message", "Browser task completed successfully."),
+                                source=source,
+                                intent=intent,
+                                steps=steps,
+                            )
+                        else:
+                            return self._response(
+                                "error",
+                                result.get("message", "Browser task failed."),
+                                source=source,
+                                intent=intent,
+                                steps=steps,
+                            )
+                    except Exception as e:
+                        return self._response(
+                            "error",
+                            f"Browser automation error: {str(e)}",
+                            source=source,
+                            intent=intent,
+                            steps=steps,
+                        )
+
         result = self.executor.execute_steps(steps, self.guard)
         self._record_last_app(steps)
 
@@ -652,11 +914,55 @@ class PixelLinkRuntime:
     def _handle_clarification(self, user_reply: str, source: str) -> dict[str, Any]:
         if user_reply.lower() in {"cancel", "stop", "abort", "no", "nevermind", "never mind"}:
             self.session.clear_pending_clarification()
-            return self._response("canceled", "Clarification canceled.", source=source)
+            self._conversational_ai.clear_pending_action()
+            return self._response("canceled", "Action canceled. What else can I help you with?", source=source)
 
         pending = self.session.pending_clarification or {}
         intent_name = pending.get("intent_name", "")
         clarification_type = pending.get("clarification_type", "")
+
+        # Handle conversational AI clarifications
+        if clarification_type == "conversational_ai":
+            # Re-analyze with the additional context from user's reply
+            self.session.clear_pending_clarification()
+            original_text = pending.get("original_text", "")
+            combined_context = f"{original_text} {user_reply}"
+            return self._handle_conversational_input(combined_context, source)
+
+        # Handle sensitive action confirmations
+        if clarification_type == "confirm_sensitive_action":
+            if user_reply.lower() in {"yes", "y", "confirm", "ok", "okay", "sure", "proceed", "go ahead", "do it"}:
+                # User confirmed - execute the pending action
+                entities = pending.get("entities", {})
+                confirmation_summary = pending.get("confirmation_summary", "")
+
+                resolved_intent = Intent(
+                    name=intent_name,
+                    entities=entities,
+                    confidence=0.95,
+                    raw_text=pending.get("original_text", ""),
+                )
+
+                self.session.clear_pending_clarification()
+                self._conversational_ai.clear_pending_action()
+                self.session.record_intent(resolved_intent.name, resolved_intent.raw_text)
+
+                # Execute with completion message
+                result = self._execute_intent_with_completion(resolved_intent, source)
+
+                # Add confirmation that we executed what was confirmed
+                if result.get("status") == "completed":
+                    result["message"] = f"✓ Confirmed and executed.\n\n{result.get('message', '')}"
+
+                return result
+            else:
+                self.session.clear_pending_clarification()
+                self._conversational_ai.clear_pending_action()
+                return self._response(
+                    "canceled",
+                    "Action canceled. I won't proceed with that. What else can I help you with?",
+                    source=source
+                )
 
         if intent_name == "send_text":
             target = (pending.get("target", "") or "").strip()
@@ -676,7 +982,7 @@ class PixelLinkRuntime:
             )
             self.session.clear_pending_clarification()
             self.session.record_intent(resolved_intent.name, resolved_intent.raw_text)
-            return self._execute_intent(resolved_intent, source)
+            return self._execute_intent_with_completion(resolved_intent, source)
 
         if intent_name == "reschedule_tasks" and clarification_type == "confirm_reschedule":
             # User confirmed rescheduling

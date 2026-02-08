@@ -253,6 +253,56 @@ class ActionPlanner:
                 )
             )
 
+        # Browser automation intents (AI-powered)
+        elif name == "browser_task":
+            instruction = intent.entities.get("instruction", "")
+            url = intent.entities.get("url")
+            steps.append(
+                ActionStep(
+                    "browser_task",
+                    {"instruction": instruction, "url": url},
+                    False,
+                    "Execute browser automation task",
+                )
+            )
+
+        elif name == "browser_fill_form":
+            form_type = intent.entities.get("form_type", "form")
+            fields = intent.entities.get("fields", {})
+            instruction = intent.entities.get("instruction", "")
+            steps.append(
+                ActionStep(
+                    "browser_fill_form",
+                    {"form_type": form_type, "fields": fields, "instruction": instruction},
+                    False,
+                    f"Fill out {form_type} form",
+                )
+            )
+
+        elif name == "browser_click":
+            element = intent.entities.get("element", "")
+            instruction = intent.entities.get("instruction", "")
+            steps.append(
+                ActionStep(
+                    "browser_click",
+                    {"element": element, "instruction": instruction},
+                    False,
+                    f"Click on {element}",
+                )
+            )
+
+        elif name == "browser_extract":
+            content_type = intent.entities.get("content_type", "main content")
+            instruction = intent.entities.get("instruction", "")
+            steps.append(
+                ActionStep(
+                    "browser_extract",
+                    {"content_type": content_type, "instruction": instruction},
+                    False,
+                    f"Extract {content_type} from page",
+                )
+            )
+
         return steps
 
 
