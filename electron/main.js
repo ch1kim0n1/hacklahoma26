@@ -30,7 +30,16 @@ const runtimeState = {
     requestedOutput: true,
     inputEnabled: false,
     outputEnabled: false,
-    errors: {}
+    errors: {},
+    model: {
+      model: "",
+      state: "unavailable",
+      stage: "unavailable",
+      message: "Voice input is unavailable.",
+      progress: 0,
+      cached: null,
+      error: ""
+    }
   },
   eyeControl: {
     active: false,
@@ -81,16 +90,33 @@ function broadcast(channel, payload) {
   });
 }
 
+function normalizeVoiceModelState(payload) {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  return {
+    model: payload.model ?? runtimeState.voice.model.model,
+    state: payload.state ?? runtimeState.voice.model.state,
+    stage: payload.stage ?? runtimeState.voice.model.stage,
+    message: payload.message ?? runtimeState.voice.model.message,
+    progress: Number.isFinite(Number(payload.progress)) ? Number(payload.progress) : runtimeState.voice.model.progress,
+    cached: payload.cached ?? runtimeState.voice.model.cached,
+    error: payload.error ?? runtimeState.voice.model.error
+  };
+}
+
 function normalizeVoiceState(payload) {
   if (!payload || typeof payload !== "object") {
     return null;
   }
+  const model = normalizeVoiceModelState(payload.model || payload.voice_model);
   return {
     requestedInput: payload.requestedInput ?? payload.requested_input ?? runtimeState.voice.requestedInput,
     requestedOutput: payload.requestedOutput ?? payload.requested_output ?? runtimeState.voice.requestedOutput,
     inputEnabled: payload.inputEnabled ?? payload.input_enabled ?? runtimeState.voice.inputEnabled,
     outputEnabled: payload.outputEnabled ?? payload.output_enabled ?? runtimeState.voice.outputEnabled,
-    errors: payload.errors && typeof payload.errors === "object" ? payload.errors : runtimeState.voice.errors
+    errors: payload.errors && typeof payload.errors === "object" ? payload.errors : runtimeState.voice.errors,
+    model: model || runtimeState.voice.model
   };
 }
 
@@ -176,6 +202,19 @@ function onBridgeLine(rawLine) {
   if (payload.status === "ready" && !bridgeReady) {
     bridgeReady = true;
     applyBridgeReadyPayload(payload);
+  }
+
+  if (payload.status === "voice_model_status") {
+    const model = normalizeVoiceModelState(payload.voice_model || payload.model);
+    if (model) {
+      runtimeState.voice = {
+        ...runtimeState.voice,
+        model
+      };
+      broadcast("runtime:voice-model-status", model);
+      broadcast("runtime:update", runtimeState);
+    }
+    return;
   }
 
   const requestId = String(payload.request_id || "");
